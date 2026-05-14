@@ -8,7 +8,7 @@ from app import db
 from app.config import settings
 from app.main import app
 from app.models import Slot
-from app.services import calendar
+from app.services import calendar, vapi
 
 
 def test_health() -> None:
@@ -39,6 +39,10 @@ def test_create_lead_and_callback(monkeypatch, tmp_path) -> None:
         end=start + timedelta(minutes=30),
     )
     monkeypatch.setattr(calendar, "get_available_slots", lambda max_slots=24: [slot])
+    async def fake_vapi_call(**kwargs):
+        return {"id": "call_test_123", "mock": True}
+
+    monkeypatch.setattr(vapi, "create_outbound_call", fake_vapi_call)
 
     with TestClient(app) as client:
         response = client.post(
@@ -55,7 +59,8 @@ def test_create_lead_and_callback(monkeypatch, tmp_path) -> None:
         assert response.status_code == 200
         data = response.json()
         lead_id = data["lead"]["lead_id"]
-        assert data["lead"]["status"] == "scheduled"
+        assert data["lead"]["status"] == "call_scheduled"
+        assert data["vapi_call"]["id"] == "call_test_123"
         assert data["call_plan"]["next_action"] == "schedule_call"
 
         recording = client.post(

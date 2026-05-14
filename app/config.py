@@ -15,6 +15,10 @@ class Settings:
     gemini_api_key: str | None = os.getenv("GEMINI_API_KEY") or None
     gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     speechmatics_api_key: str | None = os.getenv("SPEECHMATICS_API_KEY") or None
+    vapi_api_key: str | None = os.getenv("VAPI_API_KEY") or None
+    vapi_assistant_id: str | None = os.getenv("VAPI_ASSISTANT_ID") or None
+    vapi_phone_number_id: str | None = os.getenv("VAPI_PHONE_NUMBER_ID") or None
+    vapi_call_url: str = os.getenv("VAPI_CALL_URL", "https://api.vapi.ai/call")
     google_calendar_id: str = os.getenv("GOOGLE_CALENDAR_ID", "primary")
     google_application_credentials: str | None = (
         os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or None
@@ -32,6 +36,14 @@ class Settings:
         if not self.database_url.startswith("sqlite:///"):
             raise ValueError("Only sqlite:/// DATABASE_URL values are supported in v1.")
         return self.database_url.removeprefix("sqlite:///")
+
+    @property
+    def vapi_configured(self) -> bool:
+        return bool(
+            self.vapi_api_key
+            and self.vapi_assistant_id
+            and self.vapi_phone_number_id
+        )
 
 
 settings = Settings()

@@ -11,6 +11,7 @@ The app accepts warm solar leads, shows free Google Calendar slots, books a qual
 - Lead creation at `POST /api/leads`
 - Recording submission at `POST /api/recordings`
 - Speechmatics callback at `POST /webhooks/speechmatics`
+- Vapi callback at `POST /webhooks/vapi`
 - Health check at `GET /health`
 - SQLite persistence in `data/solar_agent.db`
 - Local fallback mode when external API keys are not configured
@@ -33,6 +34,10 @@ Open `http://localhost:8000`.
 GEMINI_API_KEY=
 GEMINI_MODEL=gemini-2.5-flash
 SPEECHMATICS_API_KEY=
+VAPI_API_KEY=
+VAPI_ASSISTANT_ID=
+VAPI_PHONE_NUMBER_ID=
+VAPI_CALL_URL=https://api.vapi.ai/call
 GOOGLE_CALENDAR_ID=primary
 GOOGLE_APPLICATION_CREDENTIALS=
 PUBLIC_BASE_URL=https://your-domain.example
@@ -41,6 +46,18 @@ APP_TIMEZONE=Europe/Berlin
 ```
 
 `GOOGLE_APPLICATION_CREDENTIALS` should point to a Google service account JSON file that has access to the target calendar. If it is empty, the app runs in local mode and simulates calendar availability/bookings.
+
+## Vapi Calling
+
+When `VAPI_API_KEY`, `VAPI_ASSISTANT_ID`, and `VAPI_PHONE_NUMBER_ID` are set, every new lead automatically creates a scheduled outbound Vapi call for the selected slot.
+
+Configure the assistant's server/webhook URL in Vapi to:
+
+```text
+{PUBLIC_BASE_URL}/webhooks/vapi
+```
+
+For local testing, use a public tunnel such as ngrok or Cloudflare Tunnel because Vapi cannot reach `127.0.0.1`.
 
 ## Recording Flow
 

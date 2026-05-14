@@ -43,6 +43,7 @@ def init_db() -> None:
                 selected_slot_end TEXT NOT NULL,
                 status TEXT NOT NULL,
                 calendar_event_id TEXT,
+                vapi_call_id TEXT,
                 call_plan_json TEXT,
                 transcript TEXT,
                 qualification_json TEXT
@@ -57,8 +58,32 @@ def init_db() -> None:
                 raw_response_json TEXT,
                 FOREIGN KEY (lead_id) REFERENCES leads (lead_id)
             );
+
+            CREATE TABLE IF NOT EXISTS vapi_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lead_id TEXT,
+                call_id TEXT,
+                created_at TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                payload_json TEXT NOT NULL
+            );
             """
         )
+        _ensure_column(conn, "leads", "vapi_call_id", "TEXT")
+
+
+def _ensure_column(
+    conn: sqlite3.Connection,
+    table: str,
+    column: str,
+    definition: str,
+) -> None:
+    columns = {
+        row["name"]
+        for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+    }
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def now_iso() -> str:
@@ -89,11 +114,60 @@ def get_lead(lead_id: str) -> sqlite3.Row | None:
         return conn.execute("SELECT * FROM leads WHERE lead_id = ?", (lead_id,)).fetchone()
 
 
+def get_lead_by_vapi_call_id(call_id: str) -> sqlite3.Row | None:
+    with connection() as conn:
+        return conn.execute(
+            "SELECT * FROM leads WHERE vapi_call_id = ?",
+            (call_id,),
+        ).fetchone()
+
+
 def update_call_plan(lead_id: str, call_plan: dict[str, Any]) -> None:
     with connection() as conn:
         conn.execute(
             "UPDATE leads SET call_plan_json = ? WHERE lead_id = ?",
             (json.dumps(call_plan, ensure_ascii=False), lead_id),
+        )
+
+
+def update_vapi_call(lead_id: str, call_id: str, status: str = "call_scheduled") -> None:
+    with connection() as conn:
+        conn.execute(
+            "UPDATE leads SET vapi_call_id = ?, status = ? WHERE lead_id = ?",
+            (call_id, status, lead_id),
+        )
+
+
+def update_status(lead_id: str, status: str) -> None:
+    with connection() as conn:
+        conn.execute(
+            "UPDATE leads SET status = ? WHERE lead_id = ?",
+            (status, lead_id),
+        )
+
+
+def add_vapi_event(
+    *,
+    lead_id: str | None,
+    call_id: str | None,
+    event_type: str,
+    payload: dict[str, Any],
+) -> None:
+    with connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO vapi_events (
+                lead_id, call_id, created_at, event_type, payload_json
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                lead_id,
+                call_id,
+                now_iso(),
+                event_type,
+                json.dumps(payload, ensure_ascii=False),
+            ),
         )
 
 

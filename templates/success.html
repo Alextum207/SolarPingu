@@ -31,6 +31,10 @@
       <dd>{{ lead.selected_slot_start }}</dd>
       <dt>Status</dt>
       <dd>{{ lead.status }}</dd>
+      {% if lead.vapi_call_id %}
+        <dt>Vapi Call</dt>
+        <dd>{{ lead.vapi_call_id }}</dd>
+      {% endif %}
     </dl>
     <h2>Call-Plan</h2>
     <pre>{{ call_plan | tojson(indent=2) }}</pre>
