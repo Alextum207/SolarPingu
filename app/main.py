@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from app import db
@@ -77,6 +77,13 @@ def leads_page(request: Request) -> HTMLResponse:
     return index(request)
 
 
+@app.get("/intake")
+def intake_page(request: Request):
+    if request.query_params.get("legacy") == "1":
+        return index(request)
+    return RedirectResponse(settings.frontend_url, status_code=302)
+
+
 @app.get("/api/slots", response_model=list[Slot])
 def api_slots() -> list[Slot]:
     return calendar.get_available_slots()
@@ -139,10 +146,9 @@ async def intake_form(
             },
             status_code=400,
         )
-    return templates.TemplateResponse(
-        request,
-        "workflow.html",
-        result,
+    return RedirectResponse(
+        f"{settings.frontend_url}?leadId={result['lead_id']}&autoRun=1",
+        status_code=303,
     )
 
 
@@ -224,7 +230,22 @@ async def agent2_evaluate(payload: dict[str, Any]) -> dict[str, Any]:
     solar = await solar_api.enrich_solar_potential(intake)
     decision = profitability.evaluate_profitability(intake, solar)
     offer_draft = await offer.create_offer(intake, decision, solar)
+    db.upsert_agentic_lead(
+        intake.lead_id or f"L-{uuid4().hex[:6].upper()}",
+        intake.model_dump(mode="json"),
+        status="evaluated_from_hub",
+    )
+    pdf_path = offer_pdf.generate_offer_pdf(intake, decision, offer_draft, solar)
     pdf_url = offer_pdf.offer_pdf_url(intake.lead_id or "")
+    handoff = hub.create_handoff(intake, decision, solar, offer_draft, pdf_url)
+    db.update_agentic_artifacts(
+        intake.lead_id or "",
+        status="hub_offer_ready",
+        solar=solar,
+        profitability=decision.model_dump(mode="json"),
+        offer=offer_draft.model_dump(mode="json"),
+        handoff=handoff.model_dump(mode="json"),
+    )
     return {
         "decision": decision.decision,
         "resourceLevel": decision.resource_level,
@@ -248,6 +269,7 @@ async def agent2_evaluate(payload: dict[str, Any]) -> dict[str, Any]:
         "disqualifiers": decision.disqualifiers,
         "offer": offer_draft.model_dump(mode="json"),
         "offerPdfUrl": pdf_url,
+        "offerPdfPath": str(pdf_path),
         "handoffUrl": f"{settings.public_base_url}/api/leads/{intake.lead_id}/handoff",
         "demoUrl": f"{settings.public_base_url}/demo/{intake.lead_id}",
     }
@@ -491,8 +513,18 @@ def get_offer_pdf(lead_id: str) -> FileResponse:
 async def vapi_offer_call(
     request: Request,
     lead_id: str,
-    phone_number: Annotated[str | None, Form()] = None,
-) -> HTMLResponse:
+):
+    content_type = request.headers.get("content-type", "")
+    accept = request.headers.get("accept", "")
+    wants_json = "application/json" in accept or "application/json" in content_type
+    phone_number = None
+    if "application/json" in content_type:
+        body = await request.json()
+        phone_number = body.get("phone_number") or body.get("phoneNumber")
+    else:
+        form = await request.form()
+        phone_number = form.get("phone_number")
+
     stored = db.get_agentic_lead(lead_id)
     if stored is None or not stored.get("offer") or not stored.get("profitability"):
         raise HTTPException(status_code=404, detail="Lead offer not found.")
@@ -517,13 +549,28 @@ async def vapi_offer_call(
                 event_type="offer_demo_call_started",
                 payload=response,
             )
-        status = "queued" if not response.get("skipped") else "skipped"
+        status = "failed" if response.get("failed") else "queued" if not response.get("skipped") else "skipped"
         error = None
     except Exception as exc:
         response = {}
         call_id = ""
         status = "failed"
         error = str(exc)
+    if response.get("failed") and not error:
+        error = f"Vapi {response.get('status_code')}: {response.get('error')}"
+    if wants_json:
+        return JSONResponse(
+            {
+                "ok": status not in {"failed", "skipped"},
+                "lead_id": lead_id,
+                "phone_number": number,
+                "status": status,
+                "call_id": call_id,
+                "error": error,
+                "hint": response.get("hint"),
+                "response": response,
+            }
+        )
     return templates.TemplateResponse(
         request,
         "call_result.html",

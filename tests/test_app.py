@@ -171,6 +171,41 @@ def test_agentic_workflow_reject(monkeypatch, tmp_path) -> None:
         assert data["profitability"]["next_action"] == "polite_reject"
 
 
+def test_agent2_evaluate_persists_pdf_for_hub(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path / 'hub.db'}")
+    monkeypatch.setattr(settings, "google_solar_api_key", None)
+    monkeypatch.setattr(settings, "gemini_api_key", None)
+    monkeypatch.setattr(settings, "public_base_url", "http://testserver")
+    db.init_db()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/agent2/evaluate",
+            json={
+                "leadId": "L-HUB-PDF",
+                "name": "Anna Becker",
+                "phone": "+4915112345678",
+                "address": "Am Schnittelberg 14, 65812 Bad Soden am Taunus, Germany",
+                "ownerStatus": "owner",
+                "budgetRange": "20000-30000",
+                "installationTimeline": "within_3_months",
+                "batteryInterest": True,
+                "objections": ["Finanzierung"],
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["offerPdfUrl"].endswith("/api/leads/L-HUB-PDF/offer.pdf")
+
+        pdf = client.get("/api/leads/L-HUB-PDF/offer.pdf")
+        assert pdf.status_code == 200
+        assert pdf.content.startswith(b"%PDF")
+
+        handoff = client.get("/api/leads/L-HUB-PDF/handoff")
+        assert handoff.status_code == 200
+        assert handoff.json()["offer"]["lead_id"] == "L-HUB-PDF"
+
+
 def test_voice_session_closes_and_notifies(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path / 'voice.db'}")
     monkeypatch.setattr(settings, "google_solar_api_key", None)

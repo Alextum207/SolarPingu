@@ -8,6 +8,16 @@ import httpx
 from app.config import settings
 
 
+def _international_free_number_hint(customer_number: str) -> str | None:
+    if customer_number.strip().startswith("+49"):
+        return (
+            "Vapi free numbers cannot make international calls. "
+            "Import a Twilio, Telnyx, Vonage, or SIP number for German test calls, "
+            "or test with a US destination number."
+        )
+    return None
+
+
 def is_configured() -> bool:
     return settings.vapi_configured
 
@@ -54,7 +64,13 @@ async def create_outbound_call(
     }
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.post(settings.vapi_call_url, json=body, headers=headers)
-        response.raise_for_status()
+        if response.status_code >= 400:
+            return {
+                "failed": True,
+                "status_code": response.status_code,
+                "error": response.text,
+                "hint": _international_free_number_hint(customer_number),
+            }
     return response.json()
 
 
@@ -105,7 +121,13 @@ async def create_offer_demo_call(
     }
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.post(settings.vapi_call_url, json=body, headers=headers)
-        response.raise_for_status()
+        if response.status_code >= 400:
+            return {
+                "failed": True,
+                "status_code": response.status_code,
+                "error": response.text,
+                "hint": _international_free_number_hint(customer_number),
+            }
     return response.json()
 
 

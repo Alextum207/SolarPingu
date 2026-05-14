@@ -25,6 +25,7 @@ class Settings:
         os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or None
     )
     public_base_url: str = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/")
+    frontend_url: str = os.getenv("FRONTEND_URL", "http://127.0.0.1:5173").rstrip("/")
     booking_base_url: str | None = (os.getenv("BOOKING_BASE_URL") or None)
     database_url: str = os.getenv("DATABASE_URL", "sqlite:///data/solar_agent.db")
     app_timezone: str = os.getenv("APP_TIMEZONE", "Europe/Berlin")
