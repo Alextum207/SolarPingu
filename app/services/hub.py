@@ -14,12 +14,14 @@ def create_handoff(
     profitability: ProfitabilityDecision,
     solar_enrichment: dict,
     offer: OfferDraft,
+    offer_pdf_url: str | None = None,
 ) -> HubHandoffPayload:
     return HubHandoffPayload(
         lead=lead,
         profitability=profitability,
         solar_enrichment=solar_enrichment,
         offer=offer,
+        offer_pdf_url=offer_pdf_url,
         demo_url=demo_url(lead.lead_id or ""),
         created_at=db.now_iso(),
     )

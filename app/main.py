@@ -6,7 +6,7 @@ from typing import Annotated, Any
 from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from app import db
@@ -24,6 +24,7 @@ from app.services import (
     gemini,
     hub,
     offer,
+    offer_pdf,
     profitability,
     solar_api,
     speechmatics,
@@ -152,7 +153,9 @@ async def _run_agentic_workflow(lead_id: str) -> dict[str, Any]:
     solar = await solar_api.enrich_solar_potential(lead)
     decision = profitability.evaluate_profitability(lead, solar)
     offer_draft = await offer.create_offer(lead, decision, solar)
-    handoff = hub.create_handoff(lead, decision, solar, offer_draft)
+    pdf_path = offer_pdf.generate_offer_pdf(lead, decision, offer_draft, solar)
+    pdf_url = offer_pdf.offer_pdf_url(lead_id)
+    handoff = hub.create_handoff(lead, decision, solar, offer_draft, pdf_url)
     mail = email.send_decision_email(lead, decision)
     status = {
         "PURSUE": "booking_link_sent",
@@ -174,6 +177,9 @@ async def _run_agentic_workflow(lead_id: str) -> dict[str, Any]:
         "solar_enrichment": solar,
         "profitability": decision.model_dump(mode="json"),
         "offer": offer_draft.model_dump(mode="json"),
+        "offer_pdf_url": pdf_url,
+        "offer_pdf_local_url": f"/api/leads/{lead_id}/offer.pdf",
+        "offer_pdf_path": str(pdf_path),
         "handoff": handoff.model_dump(mode="json"),
         "email": mail,
     }
@@ -205,6 +211,7 @@ async def agent2_evaluate(payload: dict[str, Any]) -> dict[str, Any]:
     solar = await solar_api.enrich_solar_potential(intake)
     decision = profitability.evaluate_profitability(intake, solar)
     offer_draft = await offer.create_offer(intake, decision, solar)
+    pdf_url = offer_pdf.offer_pdf_url(intake.lead_id or "")
     return {
         "decision": decision.decision,
         "resourceLevel": decision.resource_level,
@@ -227,6 +234,7 @@ async def agent2_evaluate(payload: dict[str, Any]) -> dict[str, Any]:
         "reasons": decision.reasons,
         "disqualifiers": decision.disqualifiers,
         "offer": offer_draft.model_dump(mode="json"),
+        "offerPdfUrl": pdf_url,
         "handoffUrl": f"{settings.public_base_url}/api/leads/{intake.lead_id}/handoff",
         "demoUrl": f"{settings.public_base_url}/demo/{intake.lead_id}",
     }
@@ -442,6 +450,80 @@ def get_offer(lead_id: str) -> dict[str, Any]:
     if stored is None or not stored.get("offer"):
         raise HTTPException(status_code=404, detail="Offer not found.")
     return stored["offer"]
+
+
+@app.get("/api/leads/{lead_id}/offer.pdf")
+def get_offer_pdf(lead_id: str) -> FileResponse:
+    path = offer_pdf.offer_pdf_path(lead_id)
+    if not path.exists():
+        stored = db.get_agentic_lead(lead_id)
+        if stored is None or not stored.get("offer") or not stored.get("profitability"):
+            raise HTTPException(status_code=404, detail="Offer PDF not found.")
+        from app.models import OfferDraft, ProfitabilityDecision
+
+        offer_pdf.generate_offer_pdf(
+            SolarLeadIntake.model_validate(stored["intake"]),
+            ProfitabilityDecision.model_validate(stored["profitability"]),
+            OfferDraft.model_validate(stored["offer"]),
+            stored.get("solar") or {},
+        )
+    return FileResponse(
+        path,
+        media_type="application/pdf",
+        filename=f"solar_offer_{lead_id}.pdf",
+    )
+
+
+@app.post("/api/leads/{lead_id}/vapi-offer-call")
+async def vapi_offer_call(
+    request: Request,
+    lead_id: str,
+    phone_number: Annotated[str | None, Form()] = None,
+) -> HTMLResponse:
+    stored = db.get_agentic_lead(lead_id)
+    if stored is None or not stored.get("offer") or not stored.get("profitability"):
+        raise HTTPException(status_code=404, detail="Lead offer not found.")
+    lead = SolarLeadIntake.model_validate(stored["intake"])
+    number = phone_number or lead.phone
+    pdf_url = offer_pdf.offer_pdf_url(lead_id)
+    try:
+        response = await vapi.create_offer_demo_call(
+            lead_id=lead_id,
+            customer_name=lead.name,
+            customer_number=number,
+            customer_email=str(lead.email),
+            offer=stored["offer"],
+            profitability=stored["profitability"],
+            offer_pdf_url=pdf_url,
+        )
+        call_id = response.get("id") or response.get("callId") or ""
+        if call_id:
+            db.add_vapi_event(
+                lead_id=lead_id,
+                call_id=str(call_id),
+                event_type="offer_demo_call_started",
+                payload=response,
+            )
+        status = "queued" if not response.get("skipped") else "skipped"
+        error = None
+    except Exception as exc:
+        response = {}
+        call_id = ""
+        status = "failed"
+        error = str(exc)
+    return templates.TemplateResponse(
+        request,
+        "call_result.html",
+        {
+            "lead_id": lead_id,
+            "phone_number": number,
+            "status": status,
+            "call_id": call_id,
+            "error": error,
+            "response": response,
+        },
+        status_code=200 if status != "failed" else 400,
+    )
 
 
 @app.post("/api/voice/session")

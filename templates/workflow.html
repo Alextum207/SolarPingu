@@ -7,23 +7,28 @@
   <style>
     :root { font-family: Inter, Arial, sans-serif; color: #142018; background: #f5f7f2; }
     body { margin: 0; padding: 28px; }
-    main { width: min(1100px, 100%); margin: 0 auto; display: grid; gap: 18px; }
+    main { width: min(1180px, 100%); margin: 0 auto; display: grid; gap: 18px; }
     h1 { margin: 0; font-size: clamp(30px, 5vw, 48px); letter-spacing: 0; }
     .band, section { background: #fff; border: 1px solid #dce7d8; border-radius: 8px; padding: 20px; box-shadow: 0 14px 40px rgba(20, 50, 25, .06); }
     .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
     .metric { border: 1px solid #e1eadf; border-radius: 6px; padding: 14px; background: #fbfcfa; }
     .metric strong { display: block; font-size: 26px; margin-top: 5px; }
     .pursue { color: #13733d; } .reject { color: #9b2222; } .nurture { color: #a15c00; }
-    pre { white-space: pre-wrap; overflow-x: auto; background: #f1f5ee; border: 1px solid #dbe6d8; border-radius: 6px; padding: 14px; font-size: 12px; }
     a { color: #1d6f42; font-weight: 900; }
-    @media (max-width: 780px) { body { padding: 18px; } .grid { grid-template-columns: 1fr; } }
+    iframe { width: 100%; min-height: 720px; border: 1px solid #cfe0cf; border-radius: 8px; background: #fff; }
+    form { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+    label { display: grid; gap: 6px; font-weight: 800; font-size: 14px; }
+    input { border: 1px solid #ccd8c7; border-radius: 6px; padding: 11px 12px; font: inherit; min-width: 230px; }
+    button { border: 0; border-radius: 6px; background: #1d6f42; color: #fff; cursor: pointer; font: inherit; font-weight: 900; padding: 12px 16px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; }
+    @media (max-width: 780px) { body { padding: 18px; } .grid { grid-template-columns: 1fr; } iframe { min-height: 520px; } }
   </style>
 </head>
 <body>
   <main>
     <div class="band">
       <h1>Agentic Workflow abgeschlossen</h1>
-      <p>Lead {{ lead_id }} wurde bewertet, mit Angebot versehen und für den Hub vorbereitet.</p>
+      <p>Lead {{ lead_id }} wurde bewertet, mit Angebots-PDF versehen und für den Voice-Demo-Call vorbereitet.</p>
     </div>
     <section>
       <h2>Entscheidung</h2>
@@ -40,16 +45,24 @@
     <section>
       <h2>Angebot</h2>
       <p><strong>{{ offer.package_name }}</strong> - {{ offer.system_size_kwp }} kWp - {{ offer.price_range.min }} bis {{ offer.price_range.max }} EUR</p>
-      <p>{{ offer.value_pitch | join(" ") }}</p>
+      <div class="actions">
+        <a href="{{ offer_pdf_local_url }}" target="_blank">PDF in neuem Tab öffnen</a>
+        <a href="/demo/{{ lead_id }}">Demo-Seite ansehen</a>
+      </div>
     </section>
     <section>
-      <h2>Aktionen</h2>
-      <p>E-Mail Status: <strong>{{ email.status }}</strong></p>
-      <p><a href="/book/{{ lead_id }}">Terminlink ansehen</a> · <a href="/demo/{{ lead_id }}">Demo/Hub Payload ansehen</a> · <a href="/api/leads/{{ lead_id }}/handoff">Handoff JSON</a></p>
+      <h2>Vapi Demo-Anruf zum Angebot</h2>
+      <p>Der Vapi-Agent bekommt Lead-Daten, Profitabilitätsentscheidung, Angebotsdaten und die PDF-URL als Kontext.</p>
+      <form action="/api/leads/{{ lead_id }}/vapi-offer-call" method="post">
+        <label>Telefonnummer für Testanruf
+          <input name="phone_number" value="{{ lead.phone }}" required>
+        </label>
+        <button type="submit">Vapi Demo-Call starten</button>
+      </form>
     </section>
     <section>
-      <h2>Handoff Payload</h2>
-      <pre>{{ handoff | tojson(indent=2) }}</pre>
+      <h2>Angebots-PDF</h2>
+      <iframe src="{{ offer_pdf_local_url }}" title="Angebots-PDF"></iframe>
     </section>
   </main>
 </body>

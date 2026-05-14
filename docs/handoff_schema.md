@@ -21,6 +21,7 @@ type HubHandoffPayload = {
   profitability: ProfitabilityDecision;
   solar_enrichment: Record<string, unknown>;
   offer: OfferDraft;
+  offer_pdf_url: string;
   demo_url: string;
   created_at: string;
 };
@@ -48,5 +49,6 @@ type SolarLeadIntake = {
 
 - `profitability.decision` drives the visible workflow state.
 - `offer` is the customer-facing offer draft.
+- `offer_pdf_url` points to the generated proposal PDF.
 - `demo_url` points to the FastAPI demo payload page.
 - `solar_enrichment.source` is either `google_solar_api` or `deterministic_fallback`.

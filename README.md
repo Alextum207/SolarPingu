@@ -12,6 +12,8 @@ The MVP is deliberately narrow: rich solar intake, profitability decision, autom
 - `solar-lead-hub` compatible endpoint at `POST /agent2/evaluate`
 - Handoff payload at `GET /api/leads/{lead_id}/handoff`
 - Offer payload at `GET /api/leads/{lead_id}/offer`
+- Generated offer PDF at `GET /api/leads/{lead_id}/offer.pdf`
+- Vapi offer demo call at `POST /api/leads/{lead_id}/vapi-offer-call`
 - Voice session at `POST /api/voice/session`
 - Speechmatics callback at `POST /webhooks/speechmatics`
 - Vapi callback at `POST /webhooks/vapi`
@@ -60,7 +62,8 @@ STAFF_NOTIFY_EMAIL=sales-team@example.com
 1. Open `http://localhost:8000`.
 2. Submit the prefilled Anna Becker form.
 3. Show the decision: `PURSUE`, score, reasons, offer range, email action.
-4. Open `/api/leads/{lead_id}/handoff` or `/demo/{lead_id}` as the `solar-lead-hub` payload.
+4. Show the embedded offer PDF and open `/api/leads/{lead_id}/offer.pdf`.
+5. Use the Vapi button to test a phone demo about the offer.
 5. Test voice Q&A:
 
 ```bash

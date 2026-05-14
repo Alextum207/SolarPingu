@@ -15,7 +15,12 @@
 <body>
   <main>
     <h1>Demo Payload für {{ lead_id }}</h1>
-    <pre>{{ record | tojson(indent=2) }}</pre>
+    {% if record.offer %}
+      <p><a href="/api/leads/{{ lead_id }}/offer.pdf">Angebots-PDF öffnen</a></p>
+      <iframe src="/api/leads/{{ lead_id }}/offer.pdf" style="width:100%;min-height:720px;border:1px solid #dce7d8;border-radius:8px;background:#fff"></iframe>
+    {% else %}
+      <pre>{{ record | tojson(indent=2) }}</pre>
+    {% endif %}
   </main>
 </body>
 </html>

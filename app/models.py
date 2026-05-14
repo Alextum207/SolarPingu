@@ -129,8 +129,14 @@ class HubHandoffPayload(BaseModel):
     profitability: ProfitabilityDecision
     solar_enrichment: dict[str, Any]
     offer: OfferDraft
+    offer_pdf_url: str | None = None
     demo_url: str
     created_at: str
+
+
+class VapiDemoCallRequest(BaseModel):
+    lead_id: str
+    phone_number: str | None = None
 
 
 class VoiceSessionCreate(BaseModel):

@@ -128,6 +128,12 @@ def test_agentic_workflow_pursue(monkeypatch, tmp_path) -> None:
         handoff = client.get(f"/api/leads/{lead_id}/handoff")
         assert handoff.status_code == 200
         assert handoff.json()["source"] == "solar-agent-fastapi"
+        assert handoff.json()["offer_pdf_url"].endswith(f"/api/leads/{lead_id}/offer.pdf")
+
+        pdf = client.get(f"/api/leads/{lead_id}/offer.pdf")
+        assert pdf.status_code == 200
+        assert pdf.headers["content-type"] == "application/pdf"
+        assert pdf.content.startswith(b"%PDF")
 
 
 def test_agentic_workflow_reject(monkeypatch, tmp_path) -> None:
@@ -183,3 +189,28 @@ def test_voice_session_closes_and_notifies(monkeypatch, tmp_path) -> None:
         assert voice.status_code == 200
         assert voice.json()["intent"] == "closed"
         assert voice.json()["staff_notification_required"] is True
+
+
+def test_vapi_offer_call_button(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path / 'vapi_offer.db'}")
+    monkeypatch.setattr(settings, "google_solar_api_key", None)
+    monkeypatch.setattr(settings, "gemini_api_key", None)
+    monkeypatch.setattr(settings, "smtp_host", None)
+    db.init_db()
+
+    async def fake_offer_call(**kwargs):
+        assert kwargs["offer_pdf_url"].endswith(".pdf")
+        return {"id": "offer_call_123", "status": "queued"}
+
+    monkeypatch.setattr(vapi, "create_offer_demo_call", fake_offer_call)
+
+    with TestClient(app) as client:
+        lead = client.post("/api/intake", json=_pursue_payload()).json()
+        lead_id = lead["lead_id"]
+        client.post(f"/api/workflows/{lead_id}/run")
+        call = client.post(
+            f"/api/leads/{lead_id}/vapi-offer-call",
+            data={"phone_number": "+15551234567"},
+        )
+        assert call.status_code == 200
+        assert "offer_call_123" in call.text
