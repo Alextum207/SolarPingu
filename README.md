@@ -1,20 +1,22 @@
-# SolarPingu - Agent 1 Qualification App
+# Solar Lead OS - Agentic Revenue Workflow
 
-SolarPingu replaces the Agent 1 n8n workflow with a standalone Python/FastAPI app.
+Solar Lead OS is a standalone Python/FastAPI decision engine for the lablab.ai Agentic Workflows track.
 
-The app accepts warm solar leads, shows free Google Calendar slots, books a qualification call, creates a Gemini call plan, submits later call recordings to Speechmatics, and stores the structured qualification result in SQLite.
+The MVP is deliberately narrow: rich solar intake, profitability decision, automatic email action, hub handoff, offer draft, and Speechmatics/Gemini voice Q&A.
 
 ## Features
 
-- Public lead form at `GET /`
-- Free-slot API at `GET /api/slots`
-- Lead creation at `POST /api/leads`
-- Recording submission at `POST /api/recordings`
+- Agentic lead form at `GET /`
+- Structured intake at `POST /api/intake`
+- Full workflow runner at `POST /api/workflows/{lead_id}/run`
+- `solar-lead-hub` compatible endpoint at `POST /agent2/evaluate`
+- Handoff payload at `GET /api/leads/{lead_id}/handoff`
+- Offer payload at `GET /api/leads/{lead_id}/offer`
+- Voice session at `POST /api/voice/session`
 - Speechmatics callback at `POST /webhooks/speechmatics`
 - Vapi callback at `POST /webhooks/vapi`
-- Health check at `GET /health`
 - SQLite persistence in `data/solar_agent.db`
-- Local fallback mode when external API keys are not configured
+- Stable fallback mode when API credentials are missing
 
 ## Local Setup
 
@@ -33,6 +35,7 @@ Open `http://localhost:8000`.
 ```bash
 GEMINI_API_KEY=
 GEMINI_MODEL=gemini-2.5-flash
+GOOGLE_SOLAR_API_KEY=
 SPEECHMATICS_API_KEY=
 VAPI_API_KEY=
 VAPI_ASSISTANT_ID=
@@ -41,57 +44,48 @@ VAPI_CALL_URL=https://api.vapi.ai/call
 GOOGLE_CALENDAR_ID=primary
 GOOGLE_APPLICATION_CREDENTIALS=
 PUBLIC_BASE_URL=https://your-domain.example
+BOOKING_BASE_URL=
 DATABASE_URL=sqlite:///data/solar_agent.db
 APP_TIMEZONE=Europe/Berlin
+SMTP_HOST=
+SMTP_PORT=587
+SMTP_USER=
+SMTP_PASSWORD=
+FROM_EMAIL=solar-lead-os@example.com
+STAFF_NOTIFY_EMAIL=sales-team@example.com
 ```
 
-`GOOGLE_APPLICATION_CREDENTIALS` should point to a Google service account JSON file that has access to the target calendar. If it is empty, the app runs in local mode and simulates calendar availability/bookings.
+## Hackathon Demo Flow
 
-## Vapi Calling
-
-When `VAPI_API_KEY`, `VAPI_ASSISTANT_ID`, and `VAPI_PHONE_NUMBER_ID` are set, every new lead automatically creates a scheduled outbound Vapi call for the selected slot.
-
-Configure the assistant's server/webhook URL in Vapi to:
-
-```text
-{PUBLIC_BASE_URL}/webhooks/vapi
-```
-
-For local testing, use a public tunnel such as ngrok or Cloudflare Tunnel because Vapi cannot reach `127.0.0.1`.
-
-## Recording Flow
-
-After a call, submit either a public recording URL:
+1. Open `http://localhost:8000`.
+2. Submit the prefilled Anna Becker form.
+3. Show the decision: `PURSUE`, score, reasons, offer range, email action.
+4. Open `/api/leads/{lead_id}/handoff` or `/demo/{lead_id}` as the `solar-lead-hub` payload.
+5. Test voice Q&A:
 
 ```bash
-curl -X POST http://localhost:8000/api/recordings ^
-  -F lead_id=SL_EXAMPLE ^
-  -F recording_url=https://example.com/call.wav
+curl -X POST http://localhost:8000/api/voice/session ^
+  -H "Content-Type: application/json" ^
+  -d "{\"lead_id\":\"SL_EXAMPLE\",\"prompt\":\"Der Preis klingt teuer. Lohnt sich das wirklich?\"}"
 ```
 
-Or upload an audio file:
+For a bad-fit lead, post `demo_fixtures/reject_lead.json` to `/api/intake` and run the workflow. It must reject and avoid sending a booking email.
 
-```bash
-curl -X POST http://localhost:8000/api/recordings ^
-  -F lead_id=SL_EXAMPLE ^
-  -F audio_file=@call.wav
-```
+## Profitability Logic
 
-Speechmatics calls back to:
+The score combines owner status, budget fit, timeline urgency, roof/solar potential, battery/wallbox upsell, decision-maker clarity, and hard disqualifiers. `PURSUE` requires score >= 70, owner status, plausible budget/timeline, and no hard disqualifier.
 
-```text
-{PUBLIC_BASE_URL}/webhooks/speechmatics
-```
+## Hub Integration
 
-## Vultr Deployment Notes
+See [docs/handoff_schema.md](docs/handoff_schema.md). The current `solar-lead-hub` can keep calling `POST /agent2/evaluate`; richer demos can read `GET /api/leads/{lead_id}/handoff`.
 
-Run the app behind HTTPS and set `PUBLIC_BASE_URL` to the public domain so Speechmatics can reach the callback. A simple production command is:
+## Speechmatics Voice Flow
 
-```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
+Speechmatics provides the transcript input. Gemini generates the pitch/Q&A/closing response. Browser speech synthesis or pre-recorded audio can speak the result in the demo; Speechmatics is not used as TTS.
 
-For a longer-running deployment, put it behind systemd, Docker, or a process manager, and mount `data/` plus `.env` outside the image.
+## Vapi Note
+
+Vapi remains optional. Free Vapi numbers may not call German numbers, so the winning demo should not depend on live outbound calling.
 
 ## Tests
 

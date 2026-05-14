@@ -3,148 +3,118 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SolarPingu - Solar-Erstgespräch</title>
+  <title>Solar Lead OS - Agentic Intake</title>
   <style>
-    :root {
-      font-family: Inter, Arial, sans-serif;
-      color: #17201a;
-      background: #f5f7f2;
-    }
-    body {
-      margin: 0;
-      min-height: 100vh;
-      display: grid;
-      place-items: center;
-      padding: 28px;
-    }
-    main {
-      width: min(760px, 100%);
-    }
-    h1 {
-      margin: 0 0 12px;
-      font-size: clamp(32px, 6vw, 56px);
-      line-height: 1.02;
-      letter-spacing: 0;
-    }
-    p {
-      color: #4e5f52;
-      font-size: 17px;
-      line-height: 1.5;
-      margin: 0 0 22px;
-    }
-    form {
-      background: #fff;
-      border: 1px solid #dde7d9;
-      border-radius: 8px;
-      box-shadow: 0 18px 50px rgba(20, 50, 25, .08);
-      display: grid;
-      gap: 16px;
-      padding: 24px;
-    }
-    .grid {
-      display: grid;
-      gap: 16px;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-    label {
-      display: grid;
-      gap: 7px;
-      font-size: 14px;
-      font-weight: 800;
-    }
-    input, select, textarea {
-      width: 100%;
-      box-sizing: border-box;
-      border: 1px solid #ccd8c7;
-      border-radius: 6px;
-      padding: 12px 13px;
-      font: inherit;
-      color: #17201a;
-      background: #fff;
-    }
-    textarea {
-      min-height: 92px;
-      resize: vertical;
-    }
-    button {
-      border: 0;
-      border-radius: 6px;
-      background: #1d6f42;
-      color: #fff;
-      cursor: pointer;
-      font: inherit;
-      font-size: 16px;
-      font-weight: 900;
-      padding: 14px 18px;
-    }
-    button:disabled {
-      background: #98a69c;
-      cursor: not-allowed;
-    }
-    .notice, .error {
-      border-radius: 6px;
-      margin-bottom: 16px;
-      padding: 12px 14px;
-    }
-    .notice {
-      background: #edf6ec;
-      border: 1px solid #c9dec5;
-      color: #295b2e;
-    }
-    .error {
-      background: #fff0f0;
-      border: 1px solid #efc0c0;
-      color: #9b2222;
-    }
-    @media (max-width: 680px) {
-      body { padding: 18px; }
-      form { padding: 18px; }
-      .grid { grid-template-columns: 1fr; }
-    }
+    :root { font-family: Inter, Arial, sans-serif; color: #142018; background: #f5f7f2; }
+    body { margin: 0; min-height: 100vh; padding: 28px; }
+    main { width: min(980px, 100%); margin: 0 auto; }
+    h1 { margin: 0 0 10px; font-size: clamp(34px, 6vw, 58px); line-height: 1.02; letter-spacing: 0; }
+    p { color: #506153; font-size: 17px; line-height: 1.5; margin: 0 0 22px; }
+    form { background: #fff; border: 1px solid #dce7d8; border-radius: 8px; box-shadow: 0 18px 50px rgba(20, 50, 25, .08); padding: 24px; display: grid; gap: 18px; }
+    .grid { display: grid; gap: 16px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid3 { display: grid; gap: 16px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    label { display: grid; gap: 7px; font-size: 14px; font-weight: 800; }
+    input, select, textarea { width: 100%; box-sizing: border-box; border: 1px solid #ccd8c7; border-radius: 6px; padding: 12px 13px; font: inherit; color: #17201a; background: #fff; }
+    textarea { min-height: 86px; resize: vertical; }
+    .checks { display: flex; flex-wrap: wrap; gap: 14px; }
+    .check { display: flex; align-items: center; gap: 9px; border: 1px solid #dce7d8; border-radius: 6px; padding: 11px 13px; background: #f9fbf7; font-weight: 800; }
+    .check input { width: auto; }
+    button { border: 0; border-radius: 6px; background: #1d6f42; color: #fff; cursor: pointer; font: inherit; font-size: 16px; font-weight: 900; padding: 14px 18px; }
+    .error { background: #fff0f0; border: 1px solid #efc0c0; color: #9b2222; border-radius: 6px; margin-bottom: 16px; padding: 12px 14px; }
+    .note { border-left: 4px solid #1d6f42; background: #edf6ec; color: #295b2e; border-radius: 6px; padding: 12px 14px; margin-bottom: 18px; }
+    @media (max-width: 760px) { body { padding: 18px; } .grid, .grid3 { grid-template-columns: 1fr; } form { padding: 18px; } }
   </style>
 </head>
 <body>
   <main>
-    <h1>Solar-Erstgespräch buchen</h1>
-    <p>Wähle einen freien Termin. Agent 1 bereitet danach den kurzen Qualifikationsanruf vor.</p>
-
+    <h1>Solar Lead OS</h1>
+    <p>Agentic Intake: Das Formular sammelt die wichtigsten Qualifizierungsdaten, danach entscheidet das System automatisch über Profitabilität, Angebot und nächste Aktion.</p>
     {% if error %}
       <div class="error">{{ error }}</div>
     {% endif %}
-    {% if not calendar_configured %}
-      <div class="notice">Lokaler Modus: Google Calendar ist noch nicht konfiguriert. Termine werden lokal simuliert.</div>
-    {% endif %}
-
-    <form action="/leads" method="post">
+    <div class="note">Hackathon-Demo: Speechmatics und Gemini bleiben Kern des Voice-/Reasoning-Flows; E-Mail fällt ohne SMTP auf Demo-Log zurück.</div>
+    <form action="/intake" method="post">
       <div class="grid">
         <label>Name
-          <input name="name" autocomplete="name" required>
+          <input name="name" autocomplete="name" value="Anna Becker" required>
         </label>
         <label>E-Mail
-          <input name="email" type="email" autocomplete="email" required>
+          <input name="email_address" type="email" autocomplete="email" value="anna.becker@example.com" required>
         </label>
       </div>
       <div class="grid">
-        <label>Telefonnummer
-          <input name="phone" type="tel" autocomplete="tel" required>
+        <label>Telefon
+          <input name="phone" type="tel" autocomplete="tel" value="+4915112345678" required>
         </label>
-        <label>Freier Termin
-          <select name="preferred_slot" required>
-            {% for slot in slots %}
-              <option value="{{ slot.value }}">{{ slot.label }}</option>
-            {% else %}
-              <option value="">Keine freien Termine gefunden</option>
-            {% endfor %}
+        <label>Adresse des Objekts
+          <input name="address" value="Am Schnittelberg 14, 65812 Bad Soden am Taunus, Germany" required>
+        </label>
+      </div>
+      <div class="grid3">
+        <label>Eigentümerstatus
+          <select name="owner_status" required>
+            <option value="owner" selected>Eigentümer</option>
+            <option value="renter">Mieter</option>
+            <option value="unknown">Unbekannt</option>
+          </select>
+        </label>
+        <label>Dachtyp
+          <select name="roof_type" required>
+            <option value="pitched" selected>Geneigtes Dach</option>
+            <option value="flat">Flachdach</option>
+            <option value="unknown">Unbekannt</option>
+          </select>
+        </label>
+        <label>Hauptziel
+          <select name="need" required>
+            <option value="both" selected>Kosten senken und unabhängiger werden</option>
+            <option value="cost_savings">Stromkosten senken</option>
+            <option value="independence">Mehr Unabhängigkeit</option>
+            <option value="unknown">Unklar</option>
           </select>
         </label>
       </div>
-      <label>Adresse des Objekts
-        <input name="address" autocomplete="street-address" placeholder="Straße, PLZ Ort">
-      </label>
-      <label>Kurze Notiz
-        <textarea name="message" placeholder="z. B. Dachtyp, Stromverbrauch, Speicherinteresse"></textarea>
-      </label>
-      <button type="submit" {% if not slots %}disabled{% endif %}>Termin anfragen</button>
+      <div class="grid3">
+        <label>Umsetzungszeitraum
+          <select name="timeline" required>
+            <option value="immediate">Sofort</option>
+            <option value="within_3_months" selected>Innerhalb 3 Monate</option>
+            <option value="within_6_months">Innerhalb 6 Monate</option>
+            <option value="within_12_months">Innerhalb 12 Monate</option>
+            <option value="exploring">Recherchephase</option>
+          </select>
+        </label>
+        <label>Budget
+          <select name="budget_range" required>
+            <option value="under_10000">unter 10.000 EUR</option>
+            <option value="10000-15000">10.000-15.000 EUR</option>
+            <option value="15000-20000" selected>15.000-20.000 EUR</option>
+            <option value="20000-30000">20.000-30.000 EUR</option>
+            <option value="over_30000">über 30.000 EUR</option>
+            <option value="unknown">Unbekannt</option>
+          </select>
+        </label>
+        <label>Kontaktpräferenz
+          <select name="preferred_contact" required>
+            <option value="email" selected>E-Mail</option>
+            <option value="phone">Telefon</option>
+            <option value="both">Beides</option>
+          </select>
+        </label>
+      </div>
+      <div class="grid">
+        <label>Entscheider
+          <input name="decision_maker" value="Ich entscheide gemeinsam mit meinem Partner" required>
+        </label>
+        <label>Größte Sorge
+          <input name="main_concern" value="Finanzierung und ob sich ein Speicher lohnt" required>
+        </label>
+      </div>
+      <div class="checks">
+        <label class="check"><input name="battery_interest" type="checkbox" checked> Batteriespeicher interessant</label>
+        <label class="check"><input name="wallbox_interest" type="checkbox"> Wallbox interessant</label>
+      </div>
+      <button type="submit">Agentic Workflow starten</button>
     </form>
   </main>
 </body>

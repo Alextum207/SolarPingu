@@ -1,0 +1,16 @@
+{
+  "name": "Max Mieter",
+  "email": "max.mieter@example.com",
+  "phone": "+4915111111111",
+  "address": "Demo Strasse 1, 10115 Berlin, Germany",
+  "owner_status": "renter",
+  "roof_type": "unknown",
+  "need": "cost_savings",
+  "timeline": "exploring",
+  "budget_range": "under_10000",
+  "decision_maker": "Vermieter entscheidet",
+  "main_concern": "Ich moechte nur wissen, ob Solar guenstig ist",
+  "battery_interest": false,
+  "wallbox_interest": false,
+  "preferred_contact": "email"
+}

@@ -108,6 +108,18 @@ async def _generate_json(system_prompt: str, user_payload: dict[str, Any], tempe
     return _parse_json_text(text)
 
 
+async def generate_structured_json(
+    *,
+    system_prompt: str,
+    payload: dict[str, Any],
+    temperature: float = 0.2,
+    fallback: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if not settings.gemini_api_key and fallback is not None:
+        return fallback
+    return await _generate_json(system_prompt, payload, temperature)
+
+
 async def create_call_plan(lead: dict[str, Any]) -> dict[str, Any]:
     payload = {
         "task": "Create the Agent 1 call preparation for this solar lead.",

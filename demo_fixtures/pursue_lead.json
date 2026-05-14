@@ -1,0 +1,16 @@
+{
+  "name": "Anna Becker",
+  "email": "anna.becker@example.com",
+  "phone": "+4915112345678",
+  "address": "Am Schnittelberg 14, 65812 Bad Soden am Taunus, Germany",
+  "owner_status": "owner",
+  "roof_type": "pitched",
+  "need": "both",
+  "timeline": "within_3_months",
+  "budget_range": "20000-30000",
+  "decision_maker": "Ich entscheide gemeinsam mit meinem Partner",
+  "main_concern": "Finanzierung und ob sich ein Speicher lohnt",
+  "battery_interest": true,
+  "wallbox_interest": false,
+  "preferred_contact": "email"
+}

@@ -22,11 +22,12 @@ def test_index_loads() -> None:
     with TestClient(app) as client:
         response = client.get("/")
     assert response.status_code == 200
-    assert "Solar-Erstgespräch buchen" in response.text
+    assert "Agentic Workflow starten" in response.text
 
 
 def test_create_lead_and_callback(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path / 'test.db'}")
+    monkeypatch.setattr(settings, "gemini_api_key", None)
     db.init_db()
 
     start = (datetime.now(settings.tz) + timedelta(days=1)).replace(
@@ -39,6 +40,7 @@ def test_create_lead_and_callback(monkeypatch, tmp_path) -> None:
         end=start + timedelta(minutes=30),
     )
     monkeypatch.setattr(calendar, "get_available_slots", lambda max_slots=24: [slot])
+
     async def fake_vapi_call(**kwargs):
         return {"id": "call_test_123", "mock": True}
 
@@ -83,3 +85,101 @@ def test_create_lead_and_callback(monkeypatch, tmp_path) -> None:
         stored = client.get(f"/api/leads/{lead_id}")
         assert stored.status_code == 200
         assert stored.json()["status"] == "transcribed"
+
+
+def _pursue_payload() -> dict:
+    return {
+        "name": "Anna Becker",
+        "email": "anna@example.com",
+        "phone": "+4915112345678",
+        "address": "Am Schnittelberg 14, 65812 Bad Soden am Taunus, Germany",
+        "owner_status": "owner",
+        "roof_type": "pitched",
+        "need": "both",
+        "timeline": "within_3_months",
+        "budget_range": "20000-30000",
+        "decision_maker": "Ich entscheide mit meinem Partner",
+        "main_concern": "Finanzierung",
+        "battery_interest": True,
+        "wallbox_interest": False,
+        "preferred_contact": "email",
+    }
+
+
+def test_agentic_workflow_pursue(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path / 'agentic.db'}")
+    monkeypatch.setattr(settings, "google_solar_api_key", None)
+    monkeypatch.setattr(settings, "gemini_api_key", None)
+    monkeypatch.setattr(settings, "smtp_host", None)
+    db.init_db()
+
+    with TestClient(app) as client:
+        intake = client.post("/api/intake", json=_pursue_payload())
+        assert intake.status_code == 200
+        lead_id = intake.json()["lead_id"]
+
+        workflow = client.post(f"/api/workflows/{lead_id}/run")
+        assert workflow.status_code == 200
+        data = workflow.json()
+        assert data["profitability"]["decision"] == "PURSUE"
+        assert data["email"]["status"] == "demo_logged"
+        assert data["offer"]["lead_id"] == lead_id
+
+        handoff = client.get(f"/api/leads/{lead_id}/handoff")
+        assert handoff.status_code == 200
+        assert handoff.json()["source"] == "solar-agent-fastapi"
+
+
+def test_agentic_workflow_reject(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path / 'reject.db'}")
+    monkeypatch.setattr(settings, "google_solar_api_key", None)
+    monkeypatch.setattr(settings, "gemini_api_key", None)
+    monkeypatch.setattr(settings, "smtp_host", None)
+    db.init_db()
+
+    with TestClient(app) as client:
+        intake = client.post(
+            "/api/intake",
+            json={
+                "name": "Max Mieter",
+                "email": "max@example.com",
+                "phone": "+4915111111111",
+                "address": "Demo Strasse 1, Berlin",
+                "owner_status": "renter",
+                "roof_type": "unknown",
+                "need": "cost_savings",
+                "timeline": "exploring",
+                "budget_range": "under_10000",
+                "decision_maker": "Vermieter",
+                "main_concern": "Nur guenstig",
+                "battery_interest": False,
+                "wallbox_interest": False,
+                "preferred_contact": "email",
+            },
+        )
+        lead_id = intake.json()["lead_id"]
+        workflow = client.post(f"/api/workflows/{lead_id}/run")
+        assert workflow.status_code == 200
+        data = workflow.json()
+        assert data["profitability"]["decision"] == "REJECT"
+        assert data["profitability"]["next_action"] == "polite_reject"
+
+
+def test_voice_session_closes_and_notifies(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path / 'voice.db'}")
+    monkeypatch.setattr(settings, "google_solar_api_key", None)
+    monkeypatch.setattr(settings, "gemini_api_key", None)
+    monkeypatch.setattr(settings, "smtp_host", None)
+    db.init_db()
+
+    with TestClient(app) as client:
+        lead = client.post("/api/intake", json=_pursue_payload()).json()
+        lead_id = lead["lead_id"]
+        client.post(f"/api/workflows/{lead_id}/run")
+        voice = client.post(
+            "/api/voice/session",
+            json={"lead_id": lead_id, "prompt": "Passt, machen wir. Ich will abschliessen."},
+        )
+        assert voice.status_code == 200
+        assert voice.json()["intent"] == "closed"
+        assert voice.json()["staff_notification_required"] is True

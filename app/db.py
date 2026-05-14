@@ -67,6 +67,38 @@ def init_db() -> None:
                 event_type TEXT NOT NULL,
                 payload_json TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS agentic_leads (
+                lead_id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                status TEXT NOT NULL,
+                intake_json TEXT NOT NULL,
+                solar_json TEXT,
+                profitability_json TEXT,
+                offer_json TEXT,
+                handoff_json TEXT,
+                voice_json TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS email_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lead_id TEXT,
+                created_at TEXT NOT NULL,
+                recipient TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                body TEXT NOT NULL,
+                status TEXT NOT NULL,
+                provider_response TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS staff_notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lead_id TEXT,
+                created_at TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                message TEXT NOT NULL,
+                status TEXT NOT NULL
+            );
             """
         )
         _ensure_column(conn, "leads", "vapi_call_id", "TEXT")
@@ -88,6 +120,117 @@ def _ensure_column(
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def upsert_agentic_lead(
+    lead_id: str,
+    intake: dict[str, Any],
+    status: str = "intake_received",
+) -> None:
+    with connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO agentic_leads (lead_id, created_at, status, intake_json)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(lead_id) DO UPDATE SET
+                status = excluded.status,
+                intake_json = excluded.intake_json
+            """,
+            (lead_id, now_iso(), status, json.dumps(intake, ensure_ascii=False)),
+        )
+
+
+def get_agentic_lead(lead_id: str) -> dict[str, Any] | None:
+    with connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM agentic_leads WHERE lead_id = ?",
+            (lead_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    data = dict(row)
+    for key in (
+        "intake_json",
+        "solar_json",
+        "profitability_json",
+        "offer_json",
+        "handoff_json",
+        "voice_json",
+    ):
+        if data.get(key):
+            data[key.removesuffix("_json")] = json.loads(data[key])
+    return data
+
+
+def update_agentic_artifacts(
+    lead_id: str,
+    *,
+    status: str,
+    solar: dict[str, Any] | None = None,
+    profitability: dict[str, Any] | None = None,
+    offer: dict[str, Any] | None = None,
+    handoff: dict[str, Any] | None = None,
+    voice: dict[str, Any] | None = None,
+) -> None:
+    assignments = ["status = ?"]
+    values: list[Any] = [status]
+    payloads = {
+        "solar_json": solar,
+        "profitability_json": profitability,
+        "offer_json": offer,
+        "handoff_json": handoff,
+        "voice_json": voice,
+    }
+    for column, payload in payloads.items():
+        if payload is not None:
+            assignments.append(f"{column} = ?")
+            values.append(json.dumps(payload, ensure_ascii=False))
+    values.append(lead_id)
+    with connection() as conn:
+        conn.execute(
+            f"UPDATE agentic_leads SET {', '.join(assignments)} WHERE lead_id = ?",
+            values,
+        )
+
+
+def add_email_event(
+    *,
+    lead_id: str | None,
+    recipient: str,
+    subject: str,
+    body: str,
+    status: str,
+    provider_response: str = "",
+) -> None:
+    with connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO email_events (
+                lead_id, created_at, recipient, subject, body, status, provider_response
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (lead_id, now_iso(), recipient, subject, body, status, provider_response),
+        )
+
+
+def add_staff_notification(
+    *,
+    lead_id: str | None,
+    channel: str,
+    message: str,
+    status: str,
+) -> None:
+    with connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO staff_notifications (
+                lead_id, created_at, channel, message, status
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (lead_id, now_iso(), channel, message, status),
+        )
 
 
 def create_lead(payload: dict[str, Any]) -> None:

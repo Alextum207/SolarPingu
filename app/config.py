@@ -14,6 +14,7 @@ load_dotenv()
 class Settings:
     gemini_api_key: str | None = os.getenv("GEMINI_API_KEY") or None
     gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    google_solar_api_key: str | None = os.getenv("GOOGLE_SOLAR_API_KEY") or None
     speechmatics_api_key: str | None = os.getenv("SPEECHMATICS_API_KEY") or None
     vapi_api_key: str | None = os.getenv("VAPI_API_KEY") or None
     vapi_assistant_id: str | None = os.getenv("VAPI_ASSISTANT_ID") or None
@@ -24,8 +25,15 @@ class Settings:
         os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or None
     )
     public_base_url: str = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/")
+    booking_base_url: str | None = (os.getenv("BOOKING_BASE_URL") or None)
     database_url: str = os.getenv("DATABASE_URL", "sqlite:///data/solar_agent.db")
     app_timezone: str = os.getenv("APP_TIMEZONE", "Europe/Berlin")
+    smtp_host: str | None = os.getenv("SMTP_HOST") or None
+    smtp_port: int = int(os.getenv("SMTP_PORT", "587"))
+    smtp_user: str | None = os.getenv("SMTP_USER") or None
+    smtp_password: str | None = os.getenv("SMTP_PASSWORD") or None
+    from_email: str = os.getenv("FROM_EMAIL", "solar-lead-os@example.com")
+    staff_notify_email: str = os.getenv("STAFF_NOTIFY_EMAIL", "sales-team@example.com")
 
     @property
     def tz(self) -> ZoneInfo:
