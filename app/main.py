@@ -1,20 +1,29 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from contextlib import asynccontextmanager
 from datetime import timedelta
-from typing import Annotated, Any
+from typing import Annotated, Any, Awaitable, Callable
 from uuid import uuid4
 
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 from fastapi.templating import Jinja2Templates
 
 from app import db
 from app.config import settings
 from app.models import (
     LeadCreate,
+    OperatorProjectCreate,
     RecordingAccepted,
     Slot,
     SolarLeadIntake,
@@ -46,7 +55,13 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+        "http://127.0.0.1:5175",
+        "http://127.0.0.1:5176",
         "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:5175",
+        "http://localhost:5176",
         "http://127.0.0.1:4173",
         "http://localhost:4173",
     ],
@@ -55,6 +70,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 templates = Jinja2Templates(directory="templates")
+
+TraceCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 @app.get("/health")
@@ -93,6 +110,46 @@ def api_slots() -> list[Slot]:
 @app.post("/api/leads")
 async def create_lead_json(payload: LeadCreate) -> dict[str, Any]:
     return await _create_lead(payload)
+
+
+@app.get("/api/leads")
+def list_leads(
+    limit: int = 100,
+    source: str = "all",
+    status: str | None = None,
+    project_id: str | None = None,
+) -> dict[str, Any]:
+    normalized = _list_normalized_leads(
+        limit=limit,
+        source=source,
+        status=status,
+        project_id=project_id,
+    )
+    return {
+        "count": len(normalized),
+        "leads": normalized,
+        "filters": {
+            "source": source,
+            "status": status,
+            "project_id": project_id,
+            "limit": limit,
+        },
+    }
+
+
+@app.get("/api/projects")
+def list_projects(limit: int = 100) -> dict[str, Any]:
+    projects = [_normalize_project(project) for project in db.list_operator_projects(limit=limit)]
+    return {"count": len(projects), "projects": projects}
+
+
+@app.post("/api/projects")
+def create_project(payload: OperatorProjectCreate) -> dict[str, Any]:
+    city = payload.city.strip()
+    name = (payload.name or "").strip() or f"{city} Projekt"
+    project_id = f"PRJ-{uuid4().hex[:10].upper()}"
+    project = db.create_operator_project(project_id=project_id, name=name, city=city)
+    return {"ok": True, "project": _normalize_project(project)}
 
 
 @app.post("/api/intake")
@@ -156,7 +213,15 @@ async def intake_form(
 async def _store_intake(payload: SolarLeadIntake) -> dict[str, Any]:
     lead_id = payload.lead_id or f"SL-{uuid4().hex[:10].upper()}"
     intake = payload.model_copy(update={"lead_id": lead_id})
-    db.upsert_agentic_lead(lead_id, intake.model_dump(mode="json"))
+    if intake.project_id and db.get_operator_project(intake.project_id) is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    db.upsert_agentic_lead(
+        lead_id,
+        intake.model_dump(mode="json"),
+        project_id=intake.project_id,
+    )
+    if intake.project_id:
+        db.touch_operator_project(intake.project_id)
     return {"ok": True, "lead_id": lead_id, "intake": intake.model_dump(mode="json")}
 
 
@@ -165,18 +230,178 @@ async def run_agentic_workflow(lead_id: str) -> dict[str, Any]:
     return await _run_agentic_workflow(lead_id)
 
 
-async def _run_agentic_workflow(lead_id: str) -> dict[str, Any]:
+@app.get("/api/workflows/{lead_id}/stream", include_in_schema=False)
+async def stream_agentic_workflow(lead_id: str) -> StreamingResponse:
+    return StreamingResponse(
+        _workflow_event_stream(lead_id),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+async def _run_agentic_workflow(
+    lead_id: str,
+    trace_callback: TraceCallback | None = None,
+) -> dict[str, Any]:
+    await _emit_trace(
+        trace_callback,
+        scope="workflow",
+        agent="Agent 1",
+        step="Workflow starten",
+        status="RUNNING",
+        message="Lead wird geladen und fuer den Agentic Workflow vorbereitet.",
+        lead_id=lead_id,
+    )
     stored = db.get_agentic_lead(lead_id)
     if stored is None:
+        await _emit_trace(
+            trace_callback,
+            scope="workflow",
+            agent="Agent 1",
+            step="Lead laden",
+            status="FAILED",
+            message="Lead wurde nicht gefunden.",
+            lead_id=lead_id,
+        )
         raise HTTPException(status_code=404, detail="Lead not found.")
     lead = SolarLeadIntake.model_validate(stored["intake"])
+    await _emit_trace(
+        trace_callback,
+        scope="workflow",
+        agent="Agent 1",
+        step="Lead geladen",
+        status="DONE",
+        message=f"{lead.name} ist bereit fuer die Bewertung.",
+        detail=lead.address,
+        lead_id=lead_id,
+    )
+    await _emit_trace(
+        trace_callback,
+        scope="workflow",
+        agent="Solar Enrichment",
+        step="Solarpotential pruefen",
+        status="RUNNING",
+        message="Google Solar oder der Demo-Fallback ermittelt Dach- und Ertragssignale.",
+        lead_id=lead_id,
+    )
     solar = await solar_api.enrich_solar_potential(lead)
+    await _emit_trace(
+        trace_callback,
+        scope="workflow",
+        agent="Solar Enrichment",
+        step="Solarpotential fertig",
+        status="WARN" if solar.get("warning") else "DONE",
+        message=solar.get("warning") or "Solarpotential wurde angereichert.",
+        detail=str(solar.get("source") or ""),
+        lead_id=lead_id,
+    )
+    await _emit_trace(
+        trace_callback,
+        scope="workflow",
+        agent="Profitability Agent",
+        step="Profitabilitaet bewerten",
+        status="RUNNING",
+        message="Budget, Timing, Eigentuemerstatus, Dachsignal und Add-ons werden gewichtet.",
+        lead_id=lead_id,
+    )
     decision = profitability.evaluate_profitability(lead, solar)
+    await _emit_trace(
+        trace_callback,
+        scope="workflow",
+        agent="Profitability Agent",
+        step="Entscheidung fertig",
+        status="DONE",
+        message=f"{decision.decision} mit Score {decision.score}/100.",
+        detail=", ".join(decision.reasons[:3]),
+        lead_id=lead_id,
+    )
+    await _emit_trace(
+        trace_callback,
+        scope="workflow",
+        agent="Offer Agent",
+        step="Angebot erstellen",
+        status="RUNNING",
+        message="Angebot, Preisrahmen und naechste Schritte werden formuliert.",
+        lead_id=lead_id,
+    )
     offer_draft = await offer.create_offer(lead, decision, solar)
+    await _emit_trace(
+        trace_callback,
+        scope="workflow",
+        agent="Offer Agent",
+        step="Angebot fertig",
+        status="DONE",
+        message=offer_draft.package_name,
+        detail=f"{offer_draft.system_size_kwp:.1f} kWp",
+        lead_id=lead_id,
+    )
+    await _emit_trace(
+        trace_callback,
+        scope="workflow",
+        agent="PDF Agent",
+        step="PDF generieren",
+        status="RUNNING",
+        message="Das Angebot wird als PDF-Artefakt erzeugt.",
+        lead_id=lead_id,
+    )
     pdf_path = offer_pdf.generate_offer_pdf(lead, decision, offer_draft, solar)
     pdf_url = offer_pdf.offer_pdf_url(lead_id)
+    await _emit_trace(
+        trace_callback,
+        scope="workflow",
+        agent="PDF Agent",
+        step="PDF fertig",
+        status="DONE",
+        message="Angebots-PDF ist verfuegbar.",
+        detail=str(pdf_path),
+        lead_id=lead_id,
+    )
+    await _emit_trace(
+        trace_callback,
+        scope="workflow",
+        agent="Handoff Agent",
+        step="Handoff vorbereiten",
+        status="RUNNING",
+        message="Payload fuer Hub, Demo und Sales-Uebergabe wird zusammengestellt.",
+        lead_id=lead_id,
+    )
     handoff = hub.create_handoff(lead, decision, solar, offer_draft, pdf_url)
+    await _emit_trace(
+        trace_callback,
+        scope="workflow",
+        agent="Handoff Agent",
+        step="Handoff fertig",
+        status="DONE",
+        message="Handoff-Payload ist gespeichert.",
+        lead_id=lead_id,
+    )
+    await _emit_trace(
+        trace_callback,
+        scope="workflow",
+        agent="Email Agent",
+        step="Naechste Aktion ausloesen",
+        status="RUNNING",
+        message="Booking-, Nurture- oder Reject-Kommunikation wird vorbereitet.",
+        lead_id=lead_id,
+    )
     mail = email.send_decision_email(lead, decision)
+    await _emit_trace(
+        trace_callback,
+        scope="workflow",
+        agent="Email Agent",
+        step="Kommunikation fertig",
+        status="WARN" if mail.get("status") == "demo_logged" else "DONE",
+        message=(
+            "SMTP fehlt; E-Mail wurde im Demo-Log gespeichert."
+            if mail.get("status") == "demo_logged"
+            else "E-Mail wurde versendet."
+        ),
+        detail=str(mail.get("status") or ""),
+        lead_id=lead_id,
+    )
     status = {
         "PURSUE": "booking_link_sent",
         "NURTURE": "nurture_info_requested",
@@ -190,7 +415,7 @@ async def _run_agentic_workflow(lead_id: str) -> dict[str, Any]:
         offer=offer_draft.model_dump(mode="json"),
         handoff=handoff.model_dump(mode="json"),
     )
-    return {
+    result = {
         "lead_id": lead_id,
         "status": status,
         "lead": lead.model_dump(mode="json"),
@@ -203,6 +428,16 @@ async def _run_agentic_workflow(lead_id: str) -> dict[str, Any]:
         "handoff": handoff.model_dump(mode="json"),
         "email": mail,
     }
+    await _emit_trace(
+        trace_callback,
+        scope="workflow",
+        agent="Agent 1",
+        step="Workflow abgeschlossen",
+        status="DONE",
+        message=f"Lead-Status: {status}.",
+        lead_id=lead_id,
+    )
+    return result
 
 
 @app.post("/agent2/evaluate")
@@ -281,6 +516,11 @@ async def run_finder_from_agent1(payload: dict[str, Any]) -> dict[str, Any]:
     city = str(payload.get("city") or "").strip()
     if not city:
         raise HTTPException(status_code=400, detail="city is required")
+    project_id = str(payload.get("project_id") or payload.get("projectId") or "").strip() or None
+    if project_id and db.get_operator_project(project_id) is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    if project_id:
+        db.touch_operator_project(project_id, last_run=True)
 
     timeout = httpx.Timeout(120.0, connect=8.0)
     try:
@@ -296,7 +536,30 @@ async def run_finder_from_agent1(payload: dict[str, Any]) -> dict[str, Any]:
             status_code=502,
             detail=f"Finder Agent 2 unavailable: {exc.__class__.__name__}",
         ) from exc
+    if project_id:
+        _assign_finder_response_to_project(data, project_id)
     return data
+
+
+@app.get("/api/finder/stream", include_in_schema=False)
+async def stream_finder_from_agent1(
+    city: str,
+    project_id: str | None = None,
+) -> StreamingResponse:
+    if not city.strip():
+        raise HTTPException(status_code=400, detail="city is required")
+    if project_id and db.get_operator_project(project_id) is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    if project_id:
+        db.touch_operator_project(project_id, last_run=True)
+    return StreamingResponse(
+        _finder_proxy_event_stream(city.strip(), project_id=project_id),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/api/finder/leads")
@@ -323,6 +586,9 @@ def list_finder_leads(limit: int = 100) -> dict[str, Any]:
 @app.post("/api/finder/leads")
 async def receive_finder_lead(payload: dict[str, Any]) -> dict[str, Any]:
     lead_id = str(payload.get("leadId") or payload.get("lead_id") or f"FINDER-{uuid4().hex[:10].upper()}")
+    project_id = str(payload.get("projectId") or payload.get("project_id") or "").strip() or None
+    if project_id and db.get_operator_project(project_id) is None:
+        project_id = None
     business_name = str(payload.get("businessName") or "Finder Lead")
     address = str(payload.get("address") or "Unknown address")
     phone = str(payload.get("phone") or "+490000000")
@@ -336,6 +602,7 @@ async def receive_finder_lead(payload: dict[str, Any]) -> dict[str, Any]:
 
     intake = SolarLeadIntake(
         lead_id=lead_id,
+        project_id=project_id,
         name=business_name,
         email=f"finder+{safe_email_id}@solarpingu.de",
         phone=phone,
@@ -359,7 +626,10 @@ async def receive_finder_lead(payload: dict[str, Any]) -> dict[str, Any]:
         lead_id,
         intake.model_dump(mode="json"),
         status="finder_lead_received",
+        project_id=project_id,
     )
+    if project_id:
+        db.touch_operator_project(project_id)
     db.update_agentic_artifacts(
         lead_id,
         status="finder_lead_received",
@@ -767,6 +1037,397 @@ def get_lead(lead_id: str) -> dict[str, Any]:
     if lead is None:
         raise HTTPException(status_code=404, detail="Lead not found.")
     return lead
+
+
+def _list_normalized_leads(
+    *,
+    limit: int,
+    source: str,
+    status: str | None,
+    project_id: str | None = None,
+) -> list[dict[str, Any]]:
+    safe_limit = max(1, min(limit, 500))
+    source = source.lower()
+    if source not in {"all", "website", "b2b_finder", "booking"}:
+        raise HTTPException(
+            status_code=400,
+            detail="source must be one of all, website, b2b_finder, booking",
+        )
+
+    records: list[dict[str, Any]] = []
+    if source in {"all", "website", "b2b_finder"}:
+        for record in db.list_agentic_leads(limit=safe_limit, project_id=project_id):
+            normalized = _normalize_agentic_lead(record)
+            if source != "all" and normalized["source"] != source:
+                continue
+            records.append(normalized)
+    if source in {"all", "booking"} and not project_id:
+        records.extend(
+            _normalize_booking_lead(record)
+            for record in db.list_booking_leads(limit=safe_limit)
+        )
+
+    if status:
+        records = [record for record in records if record["status"] == status]
+
+    records.sort(key=lambda item: item["updated_at"] or item["created_at"], reverse=True)
+    return records[:safe_limit]
+
+
+def _normalize_agentic_lead(record: dict[str, Any]) -> dict[str, Any]:
+    intake = record.get("intake") or {}
+    solar = record.get("solar") or {}
+    profitability = record.get("profitability") or {}
+    offer_payload = record.get("offer") or {}
+    lead_id = record["lead_id"]
+    is_finder = (
+        record.get("status") == "finder_lead_received"
+        or lead_id.startswith("FINDER-")
+        or "finderSolar" in solar
+    )
+    finder_solar = solar.get("finderSolar") if isinstance(solar.get("finderSolar"), dict) else {}
+    decision = profitability.get("decision") or finder_solar.get("decision")
+    score = profitability.get("score")
+    if score is None and finder_solar.get("profitabilityScore") is not None:
+        score = round(float(finder_solar["profitabilityScore"]) * 100)
+    links = _lead_links(lead_id, has_offer=bool(offer_payload or profitability))
+    project = db.get_operator_project(record["project_id"]) if record.get("project_id") else None
+    return {
+        "lead_id": lead_id,
+        "project_id": record.get("project_id"),
+        "project_name": project.get("name") if project else None,
+        "project_city": project.get("city") if project else None,
+        "source": "b2b_finder" if is_finder else "website",
+        "created_at": record.get("created_at"),
+        "updated_at": record.get("updated_at") or record.get("created_at"),
+        "status": record.get("status"),
+        "name": intake.get("name"),
+        "email": intake.get("email"),
+        "phone": intake.get("phone"),
+        "address": intake.get("address"),
+        "owner_status": intake.get("owner_status"),
+        "roof_type": intake.get("roof_type"),
+        "timeline": intake.get("timeline"),
+        "budget_range": intake.get("budget_range"),
+        "decision": decision,
+        "score": score,
+        "estimated_kwp": profitability.get("estimated_kwp") or finder_solar.get("estimatedKwPeak"),
+        "category": solar.get("category"),
+        "rating": solar.get("rating"),
+        "website": solar.get("website"),
+        "googleMapsUrl": solar.get("googleMapsUrl"),
+        "has_offer": bool(offer_payload or profitability),
+        **links,
+    }
+
+
+def _normalize_booking_lead(record: dict[str, Any]) -> dict[str, Any]:
+    lead_id = record["lead_id"]
+    return {
+        "lead_id": lead_id,
+        "project_id": None,
+        "project_name": None,
+        "project_city": None,
+        "source": "booking",
+        "created_at": record.get("created_at"),
+        "updated_at": record.get("created_at"),
+        "status": record.get("status"),
+        "name": record.get("name"),
+        "email": record.get("email"),
+        "phone": record.get("phone"),
+        "address": record.get("address"),
+        "owner_status": None,
+        "roof_type": None,
+        "timeline": record.get("selected_slot_start"),
+        "budget_range": None,
+        "decision": None,
+        "score": None,
+        "estimated_kwp": None,
+        "category": "booking",
+        "rating": None,
+        "website": None,
+        "googleMapsUrl": None,
+        "has_offer": False,
+        **_lead_links(lead_id, has_offer=False),
+    }
+
+
+def _lead_links(lead_id: str, *, has_offer: bool) -> dict[str, str | None]:
+    return {
+        "leadUrl": f"{settings.public_base_url}/api/leads/{lead_id}",
+        "demoUrl": f"{settings.public_base_url}/demo/{lead_id}",
+        "handoffUrl": f"{settings.public_base_url}/api/leads/{lead_id}/handoff",
+        "offerPdfUrl": (
+            f"{settings.public_base_url}/api/leads/{lead_id}/offer.pdf"
+            if has_offer
+            else None
+        ),
+    }
+
+
+def _normalize_project(project: dict[str, Any]) -> dict[str, Any]:
+    project_id = project["project_id"]
+    project_leads = [
+        _normalize_agentic_lead(record)
+        for record in db.list_agentic_leads(limit=500, project_id=project_id)
+    ]
+    return {
+        "project_id": project_id,
+        "name": project["name"],
+        "city": project["city"],
+        "status": project["status"],
+        "created_at": project["created_at"],
+        "updated_at": project["updated_at"],
+        "last_run_at": project.get("last_run_at"),
+        "lead_count": len(project_leads),
+        "b2b_count": len([lead for lead in project_leads if lead["source"] == "b2b_finder"]),
+        "website_count": len([lead for lead in project_leads if lead["source"] == "website"]),
+        "ready_count": len([lead for lead in project_leads if lead["status"] in {"booking_link_sent", "hub_offer_ready", "call_scheduled", "objection_handled"}]),
+        "open_count": len([lead for lead in project_leads if lead["status"] in {"intake_received", "finder_lead_received", "evaluated_from_hub", "nurture_info_requested"}]),
+    }
+
+
+def _assign_finder_response_to_project(response: dict[str, Any], project_id: str) -> list[str]:
+    assigned: list[str] = []
+    if db.get_operator_project(project_id) is None:
+        return assigned
+    for lead in response.get("leads") or []:
+        if not isinstance(lead, dict):
+            continue
+        lead_id = str(lead.get("leadId") or lead.get("lead_id") or "").strip()
+        if not lead_id:
+            continue
+        db.assign_agentic_lead_project(lead_id, project_id)
+        assigned.append(lead_id)
+    if assigned:
+        db.touch_operator_project(project_id)
+    return assigned
+
+
+async def _workflow_event_stream(lead_id: str):
+    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+    async def emit_trace(event: dict[str, Any]) -> None:
+        await queue.put({"type": "trace", "event": event})
+
+    async def run_job() -> None:
+        try:
+            response = await _run_agentic_workflow(lead_id, trace_callback=emit_trace)
+            await queue.put({"type": "final", "response": response})
+        except HTTPException as exc:
+            await queue.put(
+                {
+                    "type": "fail",
+                    "event": _trace_event(
+                        scope="workflow",
+                        agent="Agent 1",
+                        step="Workflow fehlgeschlagen",
+                        status="FAILED",
+                        message=str(exc.detail),
+                        lead_id=lead_id,
+                    ),
+                    "message": str(exc.detail),
+                }
+            )
+        except Exception as exc:
+            await queue.put(
+                {
+                    "type": "fail",
+                    "event": _trace_event(
+                        scope="workflow",
+                        agent="Agent 1",
+                        step="Workflow fehlgeschlagen",
+                        status="FAILED",
+                        message=f"{exc.__class__.__name__}: {str(exc)[:300]}",
+                        lead_id=lead_id,
+                    ),
+                    "message": f"{exc.__class__.__name__}: {str(exc)[:300]}",
+                }
+            )
+        finally:
+            await queue.put({"type": "done"})
+
+    task = asyncio.create_task(run_job())
+    try:
+        while True:
+            item = await queue.get()
+            event_type = str(item.pop("type"))
+            yield _sse_encode(event_type, item)
+            if event_type in {"done", "fail"}:
+                break
+    finally:
+        if not task.done():
+            task.cancel()
+
+
+async def _finder_proxy_event_stream(city: str, *, project_id: str | None = None):
+    start_event = _trace_event(
+        scope="finder",
+        agent="Agent 2",
+        step="Finder verbinden",
+        status="RUNNING",
+        message="Agent 1 oeffnet den Live-Stream zum B2B Finder.",
+        detail=city,
+        project_id=project_id,
+    )
+    yield _sse_encode("trace", {"event": start_event})
+    try:
+        timeout = httpx.Timeout(180.0, connect=8.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream(
+                "GET",
+                f"{settings.agent2_base_url}/finder/stream",
+                params={"city": city},
+            ) as response:
+                response.raise_for_status()
+                event_type = "message"
+                data_lines: list[str] = []
+                async for line in response.aiter_lines():
+                    if line == "":
+                        if data_lines:
+                            payload = json.loads("\n".join(data_lines))
+                            for outgoing_type, outgoing_payload in _normalize_finder_sse(
+                                event_type,
+                                payload,
+                                project_id=project_id,
+                            ):
+                                yield _sse_encode(outgoing_type, outgoing_payload)
+                        event_type = "message"
+                        data_lines = []
+                    elif line.startswith("event:"):
+                        event_type = line.removeprefix("event:").strip()
+                    elif line.startswith("data:"):
+                        data_lines.append(line.removeprefix("data:").strip())
+    except Exception as exc:
+        message = f"{exc.__class__.__name__}: {str(exc)[:300]}"
+        yield _sse_encode(
+            "fail",
+            {
+                "event": _trace_event(
+                    scope="finder",
+                    agent="Agent 2",
+                    step="Finder fehlgeschlagen",
+                    status="FAILED",
+                    message=message,
+                    detail=city,
+                    project_id=project_id,
+                ),
+                "message": message,
+            },
+        )
+    finally:
+        yield _sse_encode("done", {})
+
+
+def _normalize_finder_sse(
+    event_type: str,
+    payload: dict[str, Any],
+    *,
+    project_id: str | None = None,
+) -> list[tuple[str, dict[str, Any]]]:
+    if event_type == "trace":
+        raw = payload.get("event") or {}
+        return [
+            (
+                "trace",
+                {
+                    "event": _trace_event(
+                        scope="finder",
+                        agent="Agent 2",
+                        step=str(raw.get("step") or "Finder"),
+                        status=str(raw.get("status") or "RUNNING"),
+                        message=str(raw.get("thought") or raw.get("step") or "Finder arbeitet."),
+                        detail=raw.get("detail"),
+                        business_name=raw.get("businessName"),
+                        address=raw.get("address"),
+                        project_id=project_id,
+                    )
+                },
+            )
+        ]
+    if event_type == "final":
+        response = payload.get("response") or {}
+        assigned_leads = _assign_finder_response_to_project(response, project_id) if project_id else []
+        event = _trace_event(
+            scope="finder",
+            agent="Agent 2",
+            step="Finder abgeschlossen",
+            status="DONE",
+            message=(
+                f"{response.get('qualifiedCount', 0)} qualifiziert, "
+                f"{response.get('sentToAgent1Count', 0)} an Agent 1 gesendet."
+            ),
+            detail=response.get("runId") if not assigned_leads else f"{response.get('runId')} | Projekt: {len(assigned_leads)} Leads",
+            project_id=project_id,
+        )
+        return [
+            ("trace", {"event": event}),
+            ("final", {"response": {**response, "projectId": project_id, "assignedLeadIds": assigned_leads}}),
+        ]
+    if event_type == "fail":
+        message = str(payload.get("message") or "Finder fehlgeschlagen.")
+        return [
+            (
+                "fail",
+                {
+                    "event": _trace_event(
+                        scope="finder",
+                        agent="Agent 2",
+                        step="Finder fehlgeschlagen",
+                        status="FAILED",
+                        message=message,
+                        project_id=project_id,
+                    ),
+                    "message": message,
+                },
+            )
+        ]
+    return []
+
+
+async def _emit_trace(
+    trace_callback: TraceCallback | None,
+    **event_kwargs: Any,
+) -> dict[str, Any]:
+    event = _trace_event(**event_kwargs)
+    if trace_callback is not None:
+        await trace_callback(event)
+    return event
+
+
+def _trace_event(
+    *,
+    scope: str,
+    agent: str,
+    step: str,
+    status: str,
+    message: str,
+    detail: Any | None = None,
+    lead_id: str | None = None,
+    project_id: str | None = None,
+    business_name: str | None = None,
+    address: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "ts": db.now_iso(),
+        "scope": scope,
+        "agent": agent,
+        "step": step,
+        "status": status,
+        "message": message,
+        "detail": detail,
+        "lead_id": lead_id,
+        "project_id": project_id,
+        "business_name": business_name,
+        "address": address,
+    }
+
+
+def _sse_encode(event_type: str, payload: dict[str, Any]) -> str:
+    return (
+        f"event: {event_type}\n"
+        f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+    )
 
 
 @app.get("/api/debug/example-callback")

@@ -70,7 +70,9 @@ def init_db() -> None:
 
             CREATE TABLE IF NOT EXISTS agentic_leads (
                 lead_id TEXT PRIMARY KEY,
+                project_id TEXT,
                 created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
                 status TEXT NOT NULL,
                 intake_json TEXT NOT NULL,
                 solar_json TEXT,
@@ -78,6 +80,16 @@ def init_db() -> None:
                 offer_json TEXT,
                 handoff_json TEXT,
                 voice_json TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS operator_projects (
+                project_id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_run_at TEXT,
+                name TEXT NOT NULL,
+                city TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active'
             );
 
             CREATE TABLE IF NOT EXISTS email_events (
@@ -102,6 +114,15 @@ def init_db() -> None:
             """
         )
         _ensure_column(conn, "leads", "vapi_call_id", "TEXT")
+        _ensure_column(conn, "agentic_leads", "project_id", "TEXT")
+        _ensure_column(conn, "agentic_leads", "updated_at", "TEXT")
+        conn.execute(
+            """
+            UPDATE agentic_leads
+            SET updated_at = created_at
+            WHERE updated_at IS NULL OR updated_at = ''
+            """
+        )
 
 
 def _ensure_column(
@@ -126,17 +147,30 @@ def upsert_agentic_lead(
     lead_id: str,
     intake: dict[str, Any],
     status: str = "intake_received",
+    project_id: str | None = None,
 ) -> None:
+    timestamp = now_iso()
     with connection() as conn:
         conn.execute(
             """
-            INSERT INTO agentic_leads (lead_id, created_at, status, intake_json)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO agentic_leads (
+                lead_id, project_id, created_at, updated_at, status, intake_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(lead_id) DO UPDATE SET
+                project_id = COALESCE(excluded.project_id, project_id),
+                updated_at = excluded.updated_at,
                 status = excluded.status,
                 intake_json = excluded.intake_json
             """,
-            (lead_id, now_iso(), status, json.dumps(intake, ensure_ascii=False)),
+            (
+                lead_id,
+                project_id,
+                timestamp,
+                timestamp,
+                status,
+                json.dumps(intake, ensure_ascii=False),
+            ),
         )
 
 
@@ -152,18 +186,102 @@ def get_agentic_lead(lead_id: str) -> dict[str, Any] | None:
 def list_agentic_leads(
     *,
     status: str | None = None,
+    project_id: str | None = None,
     limit: int = 100,
 ) -> list[dict[str, Any]]:
     query = "SELECT * FROM agentic_leads"
     values: list[Any] = []
+    where: list[str] = []
     if status:
-        query += " WHERE status = ?"
+        where.append("status = ?")
         values.append(status)
+    if project_id:
+        where.append("project_id = ?")
+        values.append(project_id)
+    if where:
+        query += " WHERE " + " AND ".join(where)
     query += " ORDER BY created_at DESC LIMIT ?"
     values.append(max(1, min(limit, 500)))
     with connection() as conn:
         rows = conn.execute(query, values).fetchall()
     return [data for row in rows if (data := _agentic_row_to_dict(row)) is not None]
+
+
+def create_operator_project(
+    *,
+    project_id: str,
+    name: str,
+    city: str,
+) -> dict[str, Any]:
+    timestamp = now_iso()
+    with connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO operator_projects (
+                project_id, created_at, updated_at, name, city, status
+            )
+            VALUES (?, ?, ?, ?, ?, 'active')
+            """,
+            (project_id, timestamp, timestamp, name, city),
+        )
+        row = conn.execute(
+            "SELECT * FROM operator_projects WHERE project_id = ?",
+            (project_id,),
+        ).fetchone()
+    return dict(row)
+
+
+def get_operator_project(project_id: str) -> dict[str, Any] | None:
+    with connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM operator_projects WHERE project_id = ?",
+            (project_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_operator_projects(*, limit: int = 100) -> list[dict[str, Any]]:
+    with connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM operator_projects
+            ORDER BY updated_at DESC, created_at DESC
+            LIMIT ?
+            """,
+            (max(1, min(limit, 500)),),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def touch_operator_project(
+    project_id: str,
+    *,
+    last_run: bool = False,
+) -> None:
+    timestamp = now_iso()
+    assignments = ["updated_at = ?"]
+    values: list[Any] = [timestamp]
+    if last_run:
+        assignments.append("last_run_at = ?")
+        values.append(timestamp)
+    values.append(project_id)
+    with connection() as conn:
+        conn.execute(
+            f"UPDATE operator_projects SET {', '.join(assignments)} WHERE project_id = ?",
+            values,
+        )
+
+
+def assign_agentic_lead_project(lead_id: str, project_id: str) -> None:
+    with connection() as conn:
+        conn.execute(
+            """
+            UPDATE agentic_leads
+            SET project_id = ?, updated_at = ?
+            WHERE lead_id = ?
+            """,
+            (project_id, now_iso(), lead_id),
+        )
 
 
 def _agentic_row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -193,8 +311,8 @@ def update_agentic_artifacts(
     handoff: dict[str, Any] | None = None,
     voice: dict[str, Any] | None = None,
 ) -> None:
-    assignments = ["status = ?"]
-    values: list[Any] = [status]
+    assignments = ["status = ?", "updated_at = ?"]
+    values: list[Any] = [status, now_iso()]
     payloads = {
         "solar_json": solar,
         "profitability_json": profitability,
@@ -390,3 +508,16 @@ def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     if data.get("qualification_json"):
         data["qualification"] = json.loads(data["qualification_json"])
     return data
+
+
+def list_booking_leads(*, limit: int = 100) -> list[dict[str, Any]]:
+    with connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM leads
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (max(1, min(limit, 500)),),
+        ).fetchall()
+    return [data for row in rows if (data := row_to_dict(row)) is not None]

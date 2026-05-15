@@ -275,6 +275,231 @@ def test_finder_leads_list_supports_control_board(monkeypatch, tmp_path) -> None
         assert payload["leads"][0]["solar"]["finderSolar"]["estimatedKwPeak"] == 14.1
 
 
+def test_unified_leads_list_supports_operator_dashboard(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path / 'operator.db'}")
+    monkeypatch.setattr(settings, "public_base_url", "http://testserver")
+    db.init_db()
+
+    with TestClient(app) as client:
+        project_response = client.post(
+            "/api/projects",
+            json={"city": "Frankfurt am Main", "name": "Frankfurt Projekt A"},
+        )
+        assert project_response.status_code == 200
+        project = project_response.json()["project"]
+
+        website = client.post("/api/intake", json=_pursue_payload())
+        assert website.status_code == 200
+
+        finder = client.post(
+            "/api/finder/leads",
+            json={
+                "leadId": "FINDER-OP-1",
+                "projectId": project["project_id"],
+                "businessName": "B2B Lead GmbH",
+                "category": "Logistik",
+                "address": "Industriestrasse 4, Frankfurt, Germany",
+                "phone": "+4969000002",
+                "solar": {
+                    "estimatedKwPeak": 16.2,
+                    "profitabilityScore": 0.88,
+                    "decision": "PURSUE",
+                },
+                "vision": {"visualSolarPotentialScore": 0.82, "roofType": "flat", "blockers": []},
+            },
+        )
+        assert finder.status_code == 200
+
+        all_leads = client.get("/api/leads")
+        assert all_leads.status_code == 200
+        payload = all_leads.json()
+        assert payload["count"] == 2
+        assert {lead["source"] for lead in payload["leads"]} == {"website", "b2b_finder"}
+        assert all(lead["updated_at"] for lead in payload["leads"])
+
+        website_only = client.get("/api/leads?source=website")
+        assert website_only.status_code == 200
+        assert website_only.json()["count"] == 1
+        assert website_only.json()["leads"][0]["source"] == "website"
+
+        finder_only = client.get("/api/leads?source=b2b_finder")
+        assert finder_only.status_code == 200
+        assert finder_only.json()["count"] == 1
+        assert finder_only.json()["leads"][0]["lead_id"] == "FINDER-OP-1"
+        assert finder_only.json()["leads"][0]["project_id"] == project["project_id"]
+        assert finder_only.json()["leads"][0]["project_city"] == "Frankfurt am Main"
+
+        project_leads = client.get(f"/api/leads?project_id={project['project_id']}")
+        assert project_leads.status_code == 200
+        assert project_leads.json()["count"] == 1
+        assert project_leads.json()["leads"][0]["lead_id"] == "FINDER-OP-1"
+
+        projects = client.get("/api/projects")
+        assert projects.status_code == 200
+        assert projects.json()["projects"][0]["lead_count"] == 1
+        assert projects.json()["projects"][0]["b2b_count"] == 1
+
+
+def test_workflow_stream_emits_operator_log_events(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path / 'stream.db'}")
+    monkeypatch.setattr(settings, "google_solar_api_key", None)
+    monkeypatch.setattr(settings, "gemini_api_key", None)
+    monkeypatch.setattr(settings, "smtp_host", None)
+    monkeypatch.setattr(settings, "public_base_url", "http://testserver")
+    db.init_db()
+
+    with TestClient(app) as client:
+        intake = client.post("/api/intake", json=_pursue_payload())
+        lead_id = intake.json()["lead_id"]
+
+        with client.stream("GET", f"/api/workflows/{lead_id}/stream") as response:
+            body = response.read().decode("utf-8")
+
+        assert response.status_code == 200
+        assert "event: trace" in body
+        assert "Workflow starten" in body
+        assert "Profitability Agent" in body
+        assert "event: final" in body
+        assert "event: done" in body
+
+        listing = client.get(f"/api/leads?source=website&status=booking_link_sent")
+        assert listing.status_code == 200
+        lead = listing.json()["leads"][0]
+        assert lead["offerPdfUrl"].endswith(f"/api/leads/{lead_id}/offer.pdf")
+        assert lead["decision"] == "PURSUE"
+
+
+def test_finder_stream_proxy_normalizes_agent2_events(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "agent2_base_url", "http://agent2.local")
+
+    class FakeStreamResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            return None
+
+        async def aiter_lines(self):
+            lines = [
+                "event: trace",
+                'data: {"event":{"step":"Finder gestartet","tool":"BusinessFinderService","status":"RUNNING","thought":"Suche startet","detail":"city=Frankfurt"}}',
+                "",
+                "event: final",
+                'data: {"response":{"runId":"RUN-1","city":"Frankfurt","qualifiedCount":1,"sentToAgent1Count":1,"leads":[]}}',
+                "",
+                "event: done",
+                "data: {}",
+                "",
+            ]
+            for line in lines:
+                yield line
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            return None
+
+        def stream(self, method: str, url: str, params: dict):
+            assert method == "GET"
+            assert url == "http://agent2.local/finder/stream"
+            assert params == {"city": "Frankfurt"}
+            return FakeStreamResponse()
+
+    monkeypatch.setattr("app.main.httpx.AsyncClient", FakeAsyncClient)
+
+    with TestClient(app) as client:
+        with client.stream("GET", "/api/finder/stream?city=Frankfurt") as response:
+            body = response.read().decode("utf-8")
+
+    assert response.status_code == 200
+    assert "Finder verbinden" in body
+    assert "Finder gestartet" in body
+    assert '"agent": "Agent 2"' in body
+    assert "event: final" in body
+    assert "event: done" in body
+
+
+def test_finder_stream_assigns_final_leads_to_project(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path / 'project_stream.db'}")
+    monkeypatch.setattr(settings, "agent2_base_url", "http://agent2.local")
+    db.init_db()
+
+    class FakeStreamResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            return None
+
+        async def aiter_lines(self):
+            lines = [
+                "event: final",
+                'data: {"response":{"runId":"RUN-PROJECT","city":"Frankfurt","qualifiedCount":1,"sentToAgent1Count":1,"leads":[{"leadId":"FINDER-PROJECT-1"}]}}',
+                "",
+                "event: done",
+                "data: {}",
+                "",
+            ]
+            for line in lines:
+                yield line
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            return None
+
+        def stream(self, method: str, url: str, params: dict):
+            assert method == "GET"
+            assert url == "http://agent2.local/finder/stream"
+            assert params == {"city": "Frankfurt"}
+            return FakeStreamResponse()
+
+    monkeypatch.setattr("app.main.httpx.AsyncClient", FakeAsyncClient)
+
+    with TestClient(app) as client:
+        project = client.post(
+            "/api/projects",
+            json={"city": "Frankfurt", "name": "Frankfurt Projekt"},
+        ).json()["project"]
+        client.post(
+            "/api/finder/leads",
+            json={
+                "leadId": "FINDER-PROJECT-1",
+                "businessName": "Projekt Lead GmbH",
+                "address": "Industriestrasse 1, Frankfurt",
+                "phone": "+4969000003",
+            },
+        )
+
+        with client.stream(
+            "GET",
+            f"/api/finder/stream?city=Frankfurt&project_id={project['project_id']}",
+        ) as response:
+            body = response.read().decode("utf-8")
+
+        assert response.status_code == 200
+        assert "assignedLeadIds" in body
+        project_leads = client.get(f"/api/leads?project_id={project['project_id']}")
+        assert project_leads.json()["count"] == 1
+        assert project_leads.json()["leads"][0]["lead_id"] == "FINDER-PROJECT-1"
+
+
 def test_finder_run_proxies_to_agent2_for_frontend(monkeypatch) -> None:
     monkeypatch.setattr(settings, "agent2_base_url", "http://agent2.local")
     calls = []

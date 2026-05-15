@@ -74,6 +74,7 @@ NextAction = Literal["send_booking_link", "request_missing_info", "polite_reject
 
 class SolarLeadIntake(BaseModel):
     lead_id: str | None = Field(default=None, min_length=1, max_length=80)
+    project_id: str | None = Field(default=None, min_length=1, max_length=80)
     name: str = Field(..., min_length=1, max_length=160)
     email: EmailStr
     phone: str = Field(..., min_length=5, max_length=60)
@@ -150,3 +151,8 @@ class VoiceAgentResult(BaseModel):
     response_text: str
     next_status: str
     staff_notification_required: bool = False
+
+
+class OperatorProjectCreate(BaseModel):
+    city: str = Field(..., min_length=2, max_length=120)
+    name: str | None = Field(default=None, max_length=160)
