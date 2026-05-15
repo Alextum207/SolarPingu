@@ -970,6 +970,9 @@ def _demo_html() -> str:
         const visionWarning = lead.vision.warning
           ? `<p class="lead-reason">${escapeHtml(lead.vision.warning)}</p>`
           : "";
+        const visionPill = lead.vision.warning
+          ? `<span class="pill WARN">Vision Warnung</span>`
+          : `<span class="pill">Vision ${percent(lead.vision.visualSolarPotentialScore)}</span>`;
 
         return `
           <article class="lead-row">
@@ -988,7 +991,7 @@ def _demo_html() -> str:
                 <span class="pill">${lead.solar.estimatedKwPeak.toFixed(1)} kWp</span>
                 <span class="pill">${lead.solar.panelCount} Module</span>
                 <span class="pill">Profit ${percent(lead.solar.profitabilityScore)}</span>
-                <span class="pill">Vision ${percent(lead.vision.visualSolarPotentialScore)}</span>
+                ${visionPill}
               </div>
               <p class="lead-reason">${escapeHtml(lead.qualificationReason)}</p>
               ${visionWarning}
