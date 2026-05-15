@@ -34,7 +34,7 @@ CORE QUESTIONS
 Return strict JSON only."""
 
 
-def _parse_json_text(text: str) -> dict[str, Any]:
+def _parse_json_text(text: str, *, provider: str = "LLM") -> dict[str, Any]:
     cleaned = text.strip()
     if cleaned.startswith("```json"):
         cleaned = cleaned.removeprefix("```json").strip()
@@ -45,39 +45,47 @@ def _parse_json_text(text: str) -> dict[str, Any]:
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError:
-        return {"parse_error": "Gemini did not return valid JSON.", "raw": text}
+        return {"parse_error": f"{provider} did not return valid JSON.", "raw": text}
 
 
-async def _generate_json(system_prompt: str, user_payload: dict[str, Any], temperature: float) -> dict[str, Any]:
-    if not settings.gemini_api_key:
-        return {
-            "mock": True,
-            "call_ready": True,
-            "missing_fields": ["owner_status", "roof_type", "timeline", "budget_range"],
-            "opening_line": "Hallo, ich melde mich kurz zu Ihrer Solar-Anfrage und möchte die wichtigsten Eckdaten klären.",
-            "prioritized_questions": [
-                "Besitzen Sie die Immobilie selbst?",
-                "Ist das Dach eher geneigt oder flach?",
-                "Wann wäre eine Umsetzung für Sie ideal?",
-                "Haben Sie bereits eine Budgetspanne im Kopf?",
-            ],
-            "risk_notes": ["Gemini API key is not configured; using local development response."],
-            "next_action": "schedule_call",
-            "qualification_schema": {
-                "language": "de",
-                "owner_status": None,
-                "roof_type": None,
-                "need": None,
-                "timeline": None,
-                "budget_range": None,
-                "decision_maker": None,
-                "main_concern": None,
-                "best_contact_method": None,
-                "follow_up_permission": None,
-                "confidence_score": 0.0,
-            },
-        }
+def _local_development_response() -> dict[str, Any]:
+    return {
+        "mock": True,
+        "call_ready": True,
+        "missing_fields": ["owner_status", "roof_type", "timeline", "budget_range"],
+        "opening_line": (
+            "Hallo, ich melde mich kurz zu Ihrer Solar-Anfrage und moechte "
+            "die wichtigsten Eckdaten klaeren."
+        ),
+        "prioritized_questions": [
+            "Besitzen Sie die Immobilie selbst?",
+            "Ist das Dach eher geneigt oder flach?",
+            "Wann waere eine Umsetzung fuer Sie ideal?",
+            "Haben Sie bereits eine Budgetspanne im Kopf?",
+        ],
+        "risk_notes": ["No LLM provider is configured; using local development response."],
+        "next_action": "schedule_call",
+        "qualification_schema": {
+            "language": "de",
+            "owner_status": None,
+            "roof_type": None,
+            "need": None,
+            "timeline": None,
+            "budget_range": None,
+            "decision_maker": None,
+            "main_concern": None,
+            "best_contact_method": None,
+            "follow_up_permission": None,
+            "confidence_score": 0.0,
+        },
+    }
 
+
+async def _generate_gemini_json(
+    system_prompt: str,
+    user_payload: dict[str, Any],
+    temperature: float,
+) -> dict[str, Any]:
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
         f"{settings.gemini_model}:generateContent?key={settings.gemini_api_key}"
@@ -105,7 +113,80 @@ async def _generate_json(system_prompt: str, user_payload: dict[str, Any], tempe
         .get("content", {})
         .get("parts", [])
     )
-    return _parse_json_text(text)
+    return _parse_json_text(text, provider="Gemini")
+
+
+async def _generate_featherless_json(
+    system_prompt: str,
+    user_payload: dict[str, Any],
+    temperature: float,
+) -> dict[str, Any]:
+    payload = {
+        "model": settings.featherless_model,
+        "temperature": temperature,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": json.dumps(user_payload, ensure_ascii=False),
+            },
+        ],
+    }
+    headers = {
+        "Authorization": f"Bearer {settings.featherless_api_key}",
+        "Content-Type": "application/json",
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            f"{settings.featherless_base_url}/chat/completions",
+            json=payload,
+            headers=headers,
+        )
+        response.raise_for_status()
+    data = response.json()
+    text = str(data["choices"][0]["message"]["content"])
+    return _parse_json_text(text, provider="Featherless")
+
+
+async def _generate_json(
+    system_prompt: str,
+    user_payload: dict[str, Any],
+    temperature: float,
+    fallback: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if settings.gemini_api_key:
+        try:
+            return await _generate_gemini_json(system_prompt, user_payload, temperature)
+        except (
+            httpx.HTTPError,
+            KeyError,
+            IndexError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+        ):
+            if not settings.featherless_api_key:
+                if fallback is not None:
+                    return fallback
+                raise
+
+    if settings.featherless_api_key:
+        try:
+            return await _generate_featherless_json(system_prompt, user_payload, temperature)
+        except (
+            httpx.HTTPError,
+            KeyError,
+            IndexError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+        ):
+            if fallback is not None:
+                return fallback
+            raise
+
+    return fallback or _local_development_response()
 
 
 async def generate_structured_json(
@@ -115,9 +196,7 @@ async def generate_structured_json(
     temperature: float = 0.2,
     fallback: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    if not settings.gemini_api_key and fallback is not None:
-        return fallback
-    return await _generate_json(system_prompt, payload, temperature)
+    return await _generate_json(system_prompt, payload, temperature, fallback=fallback)
 
 
 async def create_call_plan(lead: dict[str, Any]) -> dict[str, Any]:

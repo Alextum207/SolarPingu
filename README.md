@@ -79,6 +79,9 @@ Open Finder/Agent 2 at `http://127.0.0.1:8001/`.
 ```bash
 GEMINI_API_KEY=
 GEMINI_MODEL=gemini-2.5-flash
+FEATHERLESS_API_KEY=
+FEATHERLESS_BASE_URL=https://api.featherless.ai/v1
+FEATHERLESS_MODEL=google/gemma-3-27b-it
 GOOGLE_SOLAR_API_KEY=
 SPEECHMATICS_API_KEY=
 VAPI_API_KEY=

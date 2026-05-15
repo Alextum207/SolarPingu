@@ -2,13 +2,20 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from app import db
 from app.config import settings
 from app.main import app
 from app.models import Slot
-from app.services import calendar, vapi
+from app.services import calendar, gemini, vapi
+
+
+@pytest.fixture(autouse=True)
+def disable_featherless_by_default(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "featherless_api_key", None)
 
 
 def test_health() -> None:
@@ -23,6 +30,99 @@ def test_index_loads() -> None:
         response = client.get("/")
     assert response.status_code == 200
     assert "Agentic Workflow starten" in response.text
+
+
+@pytest.mark.asyncio
+async def test_featherless_generates_when_gemini_key_missing(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "gemini_api_key", None)
+    monkeypatch.setattr(settings, "featherless_api_key", "featherless-test")
+    monkeypatch.setattr(settings, "featherless_base_url", "https://api.featherless.ai/v1")
+    monkeypatch.setattr(settings, "featherless_model", "test/model")
+    posts = []
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {
+                "choices": [
+                    {"message": {"content": '{"provider":"featherless","ok":true}'}}
+                ]
+            }
+
+    class FakeAsyncClient:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def post(self, url: str, **kwargs):
+            posts.append((url, kwargs))
+            return FakeResponse()
+
+    monkeypatch.setattr(gemini.httpx, "AsyncClient", FakeAsyncClient)
+
+    result = await gemini.generate_structured_json(
+        system_prompt="Return JSON",
+        payload={"lead": "test"},
+        fallback={"fallback": True},
+    )
+
+    assert result == {"provider": "featherless", "ok": True}
+    assert posts[0][0] == "https://api.featherless.ai/v1/chat/completions"
+    assert posts[0][1]["json"]["model"] == "test/model"
+    assert posts[0][1]["headers"]["Authorization"] == "Bearer featherless-test"
+
+
+@pytest.mark.asyncio
+async def test_featherless_fallback_runs_after_gemini_http_error(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "gemini_api_key", "gemini-test")
+    monkeypatch.setattr(settings, "gemini_model", "gemini-test-model")
+    monkeypatch.setattr(settings, "featherless_api_key", "featherless-test")
+    monkeypatch.setattr(settings, "featherless_base_url", "https://api.featherless.ai/v1")
+    monkeypatch.setattr(settings, "featherless_model", "fallback/model")
+    urls = []
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"choices": [{"message": {"content": '{"fallback":"featherless"}'}}]}
+
+    class FakeAsyncClient:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def post(self, url: str, **kwargs):
+            urls.append(url)
+            if "generativelanguage.googleapis.com" in url:
+                raise httpx.ConnectError("Gemini unavailable")
+            return FakeResponse()
+
+    monkeypatch.setattr(gemini.httpx, "AsyncClient", FakeAsyncClient)
+
+    result = await gemini.generate_structured_json(
+        system_prompt="Return JSON",
+        payload={"lead": "test"},
+        fallback={"fallback": "local"},
+    )
+
+    assert result == {"fallback": "featherless"}
+    assert len(urls) == 2
+    assert "gemini-test-model:generateContent" in urls[0]
+    assert urls[1] == "https://api.featherless.ai/v1/chat/completions"
 
 
 def test_create_lead_and_callback(monkeypatch, tmp_path) -> None:
