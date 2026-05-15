@@ -113,14 +113,17 @@ async def upload_context_file(
             "text/markdown",
         )
     }
-    async with httpx.AsyncClient(timeout=45) as client:
-        response = await client.post(settings.vapi_file_url, headers=headers, files=files)
-        if response.status_code >= 400:
-            return {
-                "failed": True,
-                "status_code": response.status_code,
-                "error": response.text,
-            }
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.post(settings.vapi_file_url, headers=headers, files=files)
+            if response.status_code >= 400:
+                return {
+                    "failed": True,
+                    "status_code": response.status_code,
+                    "error": response.text,
+                }
+    except httpx.HTTPError as exc:
+        return {"failed": True, "error": str(exc)}
     return response.json()
 
 
@@ -202,13 +205,6 @@ async def create_offer_demo_call(
         offer_pdf_url=offer_pdf_url,
     )
     uploaded_file = await upload_context_file(lead_id=lead_id, markdown=context_markdown)
-    if uploaded_file.get("failed"):
-        return {
-            "failed": True,
-            "status_code": uploaded_file.get("status_code"),
-            "error": f"Vapi context file upload failed: {uploaded_file.get('error')}",
-            "uploaded_context_file": uploaded_file,
-        }
     file_id = uploaded_file.get("id") if not uploaded_file.get("failed") else None
     file_url = uploaded_file.get("url") if not uploaded_file.get("failed") else None
 
@@ -252,6 +248,7 @@ async def create_offer_demo_call(
                 "status_code": response.status_code,
                 "error": response.text,
                 "hint": _international_free_number_hint(customer_number),
+                "uploaded_context_file": uploaded_file,
             }
     data = response.json()
     data["uploaded_context_file"] = uploaded_file
