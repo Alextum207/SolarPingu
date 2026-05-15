@@ -275,6 +275,70 @@ async def agent2_evaluate(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+@app.post("/api/finder/leads")
+async def receive_finder_lead(payload: dict[str, Any]) -> dict[str, Any]:
+    lead_id = str(payload.get("leadId") or payload.get("lead_id") or f"FINDER-{uuid4().hex[:10].upper()}")
+    business_name = str(payload.get("businessName") or "Finder Lead")
+    address = str(payload.get("address") or "Unknown address")
+    phone = str(payload.get("phone") or "+490000000")
+    if len(phone) < 5:
+        phone = "+490000000"
+    safe_email_id = "".join(char.lower() for char in lead_id if char.isalnum())[:40] or "finder"
+    solar = payload.get("solar") if isinstance(payload.get("solar"), dict) else {}
+    vision = payload.get("vision") if isinstance(payload.get("vision"), dict) else {}
+    website = str(payload.get("website") or "")
+    maps_url = str(payload.get("googleMapsUrl") or "")
+
+    intake = SolarLeadIntake(
+        lead_id=lead_id,
+        name=business_name,
+        email=f"finder+{safe_email_id}@solarpingu.de",
+        phone=phone,
+        address=address,
+        owner_status="unknown",
+        roof_type="flat" if "flat" in str(vision.get("roofType", "")).lower() else "unknown",
+        need="cost_savings",
+        timeline="exploring",
+        budget_range="unknown",
+        decision_maker="Finder public business data",
+        main_concern=(
+            f"Finder lead from {payload.get('source', 'unknown source')}. "
+            f"Category: {payload.get('category', 'unknown')}. "
+            f"Website: {website or 'n/a'}. Maps: {maps_url or 'n/a'}."
+        )[:500],
+        battery_interest=False,
+        wallbox_interest=False,
+        preferred_contact="email",
+    )
+    db.upsert_agentic_lead(
+        lead_id,
+        intake.model_dump(mode="json"),
+        status="finder_lead_received",
+    )
+    db.update_agentic_artifacts(
+        lead_id,
+        status="finder_lead_received",
+        solar={
+            "source": payload.get("source"),
+            "category": payload.get("category"),
+            "rating": payload.get("rating"),
+            "website": website,
+            "googleMapsUrl": maps_url,
+            "finderSolar": solar,
+            "finderVision": vision,
+            "publicInfoOnly": payload.get("publicInfoOnly", True),
+            "visionWarning": payload.get("visionWarning"),
+        },
+    )
+    return {
+        "ok": True,
+        "lead_id": lead_id,
+        "status": "finder_lead_received",
+        "handoffUrl": f"{settings.public_base_url}/api/leads/{lead_id}/handoff",
+        "leadUrl": f"{settings.public_base_url}/api/leads/{lead_id}",
+    }
+
+
 @app.post("/leads", response_class=HTMLResponse)
 async def create_lead_form(
     request: Request,

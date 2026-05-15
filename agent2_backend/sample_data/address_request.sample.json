@@ -1,0 +1,12 @@
+{
+  "leadId": "L-001",
+  "address": "Am Schnittelberg 14, 65812 Bad Soden am Taunus, Germany",
+  "name": "Anna Becker",
+  "batteryInterest": true,
+  "budgetRange": "15000-20000",
+  "installationTimeline": "within_3_months",
+  "ownerStatus": "owner",
+  "objections": [
+    "financing uncertainty"
+  ]
+}

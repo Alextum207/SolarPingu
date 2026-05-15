@@ -206,6 +206,46 @@ def test_agent2_evaluate_persists_pdf_for_hub(monkeypatch, tmp_path) -> None:
         assert handoff.json()["offer"]["lead_id"] == "L-HUB-PDF"
 
 
+def test_finder_lead_webhook_stores_agentic_lead(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path / 'finder.db'}")
+    monkeypatch.setattr(settings, "public_base_url", "http://testserver")
+    db.init_db()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/finder/leads",
+            json={
+                "leadId": "FINDER-TEST-1",
+                "source": "GOOGLE_PLACES",
+                "businessName": "Autohaus Test",
+                "category": "Autohaus",
+                "address": "Industriestrasse 1, Frankfurt, Germany",
+                "phone": "+4969000000",
+                "website": "https://example.com",
+                "googleMapsUrl": "https://maps.google.com/?q=test",
+                "rating": 4.5,
+                "solar": {"estimatedKwPeak": 12.4, "decision": "PURSUE"},
+                "vision": {
+                    "visualSolarPotentialScore": 0.78,
+                    "roofType": "flat_commercial_roof",
+                    "blockers": [],
+                },
+                "publicInfoOnly": True,
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["lead_id"] == "FINDER-TEST-1"
+        assert response.json()["handoffUrl"].endswith("/api/leads/FINDER-TEST-1/handoff")
+
+        stored = client.get("/api/leads/FINDER-TEST-1")
+        assert stored.status_code == 200
+        payload = stored.json()
+        assert payload["status"] == "finder_lead_received"
+        assert payload["intake"]["name"] == "Autohaus Test"
+        assert payload["solar"]["finderSolar"]["estimatedKwPeak"] == 12.4
+        assert payload["solar"]["finderVision"]["visualSolarPotentialScore"] == 0.78
+
+
 def test_voice_session_closes_and_notifies(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path / 'voice.db'}")
     monkeypatch.setattr(settings, "google_solar_api_key", None)

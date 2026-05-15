@@ -10,6 +10,7 @@ The MVP is deliberately narrow: rich solar intake, profitability decision, autom
 - Structured intake at `POST /api/intake`
 - Full workflow runner at `POST /api/workflows/{lead_id}/run`
 - `solar-lead-hub` compatible endpoint at `POST /agent2/evaluate`
+- Finder-Agent handoff endpoint at `POST /api/finder/leads`
 - Handoff payload at `GET /api/leads/{lead_id}/handoff`
 - Offer payload at `GET /api/leads/{lead_id}/offer`
 - Generated offer PDF at `GET /api/leads/{lead_id}/offer.pdf`
@@ -31,6 +32,35 @@ uvicorn app.main:app --reload
 ```
 
 Open `http://localhost:8000`.
+
+## Finder Agent / Agent 2
+
+The repository also includes a separate Finder/Agent-2 service in
+`agent2_backend/`. It can search Google Places for businesses in a city,
+evaluate rooftop potential with Google Solar, inspect the satellite image with
+Featherless Vision, and send qualified leads into Agent 1.
+
+Run Agent 1:
+
+```bash
+uvicorn app.main:app --reload --port 8000
+```
+
+Run Finder/Agent 2 in a second terminal:
+
+```bash
+cd agent2_backend
+copy .env.example .env
+uvicorn app.main:app --reload --port 8001
+```
+
+For local handoff from Finder to Agent 1, set this in `agent2_backend/.env`:
+
+```bash
+AGENT1_WEBHOOK_URL=http://127.0.0.1:8000/api/finder/leads
+```
+
+Open Finder/Agent 2 at `http://127.0.0.1:8001/`.
 
 ## Environment
 
