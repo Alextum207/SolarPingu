@@ -249,3 +249,36 @@ def test_vapi_offer_call_button(monkeypatch, tmp_path) -> None:
         )
         assert call.status_code == 200
         assert "offer_call_123" in call.text
+
+
+def test_vapi_offer_context_markdown_contains_call_file_payload() -> None:
+    markdown = vapi.build_offer_context_markdown(
+        lead_id="L-CONTEXT",
+        customer_name="Anna Becker",
+        customer_number="+4915112345678",
+        customer_email="anna@example.com",
+        offer={
+            "package_name": "Smart PV Paket",
+            "system_size_kwp": 9.8,
+            "includes_battery": True,
+            "price_range": {"min": 22000, "max": 28000, "currency": "EUR"},
+            "value_pitch": ["Mehr Eigenverbrauch"],
+            "assumptions": ["Vor-Ort-Pruefung offen"],
+            "next_steps": ["Termin buchen"],
+        },
+        profitability={
+            "decision": "PURSUE",
+            "score": 82,
+            "resource_level": "high_touch",
+            "estimated_margin": 5200,
+            "payback_years": 9.2,
+            "reasons": ["Eigentuemerstatus bestaetigt"],
+            "disqualifiers": [],
+        },
+        offer_pdf_url="http://testserver/api/leads/L-CONTEXT/offer.pdf",
+    )
+
+    assert "Anna Becker" in markdown
+    assert "Smart PV Paket" in markdown
+    assert "http://testserver/api/leads/L-CONTEXT/offer.pdf" in markdown
+    assert "Voice Agent Instructions" in markdown

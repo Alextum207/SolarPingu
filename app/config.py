@@ -20,6 +20,7 @@ class Settings:
     vapi_assistant_id: str | None = os.getenv("VAPI_ASSISTANT_ID") or None
     vapi_phone_number_id: str | None = os.getenv("VAPI_PHONE_NUMBER_ID") or None
     vapi_call_url: str = os.getenv("VAPI_CALL_URL", "https://api.vapi.ai/call")
+    vapi_file_url: str = os.getenv("VAPI_FILE_URL", "https://api.vapi.ai/file")
     google_calendar_id: str = os.getenv("GOOGLE_CALENDAR_ID", "primary")
     google_application_credentials: str | None = (
         os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or None
