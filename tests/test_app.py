@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from datetime import datetime, timedelta
 
 import httpx
@@ -10,7 +11,7 @@ from app import db
 from app.config import settings
 from app.main import app
 from app.models import Slot
-from app.services import calendar, gemini, vapi
+from app.services import calendar, gemini, offer_pdf, vapi
 
 
 @pytest.fixture(autouse=True)
@@ -324,6 +325,8 @@ def test_finder_lead_webhook_stores_agentic_lead(monkeypatch, tmp_path) -> None:
                 "website": "https://example.com",
                 "googleMapsUrl": "https://maps.google.com/?q=test",
                 "rating": 4.5,
+                "roofImageUrl": "/agent2/roof-image/FINDER-TEST-1.png",
+                "roofImageSource": "GOOGLE_MAPS_STATIC",
                 "solar": {"estimatedKwPeak": 12.4, "decision": "PURSUE"},
                 "vision": {
                     "visualSolarPotentialScore": 0.78,
@@ -344,6 +347,8 @@ def test_finder_lead_webhook_stores_agentic_lead(monkeypatch, tmp_path) -> None:
         assert payload["intake"]["name"] == "Autohaus Test"
         assert payload["solar"]["finderSolar"]["estimatedKwPeak"] == 12.4
         assert payload["solar"]["finderVision"]["visualSolarPotentialScore"] == 0.78
+        assert payload["solar"]["roofImageUrl"].endswith("/agent2/roof-image/FINDER-TEST-1.png")
+        assert payload["solar"]["roofImageSource"] == "GOOGLE_MAPS_STATIC"
 
 
 def test_finder_leads_list_supports_control_board(monkeypatch, tmp_path) -> None:
@@ -405,6 +410,8 @@ def test_unified_leads_list_supports_operator_dashboard(monkeypatch, tmp_path) -
                     "profitabilityScore": 0.88,
                     "decision": "PURSUE",
                 },
+                "roofImageUrl": "/agent2/roof-image/FINDER-OP-1.png",
+                "roofImageSource": "GOOGLE_MAPS_STATIC",
                 "vision": {"visualSolarPotentialScore": 0.82, "roofType": "flat", "blockers": []},
             },
         )
@@ -428,6 +435,9 @@ def test_unified_leads_list_supports_operator_dashboard(monkeypatch, tmp_path) -
         assert finder_only.json()["leads"][0]["lead_id"] == "FINDER-OP-1"
         assert finder_only.json()["leads"][0]["project_id"] == project["project_id"]
         assert finder_only.json()["leads"][0]["project_city"] == "Frankfurt am Main"
+        assert finder_only.json()["leads"][0]["roofImageUrl"].endswith(
+            "/agent2/roof-image/FINDER-OP-1.png"
+        )
 
         project_leads = client.get(f"/api/leads?project_id={project['project_id']}")
         assert project_leads.status_code == 200
@@ -438,6 +448,61 @@ def test_unified_leads_list_supports_operator_dashboard(monkeypatch, tmp_path) -
         assert projects.status_code == 200
         assert projects.json()["projects"][0]["lead_count"] == 1
         assert projects.json()["projects"][0]["b2b_count"] == 1
+
+
+def test_agent2_roof_image_is_used_in_offer_pdf(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path / 'roof_image_pdf.db'}")
+    monkeypatch.setattr(settings, "public_base_url", "http://testserver")
+    monkeypatch.setattr(settings, "agent2_base_url", "http://agent2.local")
+    monkeypatch.setattr(settings, "google_solar_api_key", None)
+    monkeypatch.setattr(settings, "gemini_api_key", None)
+    monkeypatch.setattr(settings, "smtp_host", None)
+    db.init_db()
+    fetched_urls = []
+    png_1x1 = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+    )
+
+    def fake_fetch_image_bytes(url: str) -> bytes:
+        fetched_urls.append(url)
+        return png_1x1
+
+    monkeypatch.setattr(offer_pdf, "_fetch_image_bytes", fake_fetch_image_bytes)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/finder/leads",
+            json={
+                "leadId": "FINDER-PDF-IMAGE",
+                "businessName": "Bild Dach GmbH",
+                "category": "Logistik",
+                "address": "Dachstrasse 2, Frankfurt, Germany",
+                "phone": "+4969000003",
+                "roofImageUrl": "/agent2/roof-image/FINDER-PDF-IMAGE.png",
+                "roofImageSource": "GOOGLE_MAPS_STATIC",
+                "solar": {
+                    "estimatedKwPeak": 18.2,
+                    "profitabilityScore": 0.91,
+                    "decision": "PURSUE",
+                },
+                "vision": {"visualSolarPotentialScore": 0.84, "roofType": "flat", "blockers": []},
+            },
+        )
+        assert response.status_code == 200
+
+        workflow = client.post("/api/workflows/FINDER-PDF-IMAGE/run")
+        assert workflow.status_code == 200
+        image_url = "http://agent2.local/agent2/roof-image/FINDER-PDF-IMAGE.png"
+        assert image_url in fetched_urls
+
+        stored = client.get("/api/leads/FINDER-PDF-IMAGE")
+        assert stored.status_code == 200
+        assert stored.json()["solar"]["roofImageUrl"] == image_url
+
+        pdf = client.get("/api/leads/FINDER-PDF-IMAGE/offer.pdf")
+        assert pdf.status_code == 200
+        assert pdf.content.startswith(b"%PDF")
+        assert fetched_urls.count(image_url) >= 2
 
 
 def test_workflow_stream_emits_operator_log_events(monkeypatch, tmp_path) -> None:

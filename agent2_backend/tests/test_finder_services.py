@@ -9,10 +9,11 @@ from app.models import (
     BusinessCandidate,
     BusinessLeadSource,
     Decision,
+    FinderSolarSummary,
     VisionAnalysis,
 )
 from app.services.agent1 import Agent1WebhookService
-from app.services.finder import qualifies_finder_lead
+from app.services.finder import _agent1_payload, qualifies_finder_lead
 from app.services.places import dedupe_business_candidates
 from app.services.vision import parse_featherless_vision_text
 
@@ -128,3 +129,35 @@ def test_agent1_webhook_success_uses_idempotency_key() -> None:
     assert result.status == Agent1DeliveryStatus.SENT
     assert result.sent is True
     assert seen_headers["idempotency"] == "FINDER-123"
+
+
+def test_agent1_payload_includes_roof_image_metadata() -> None:
+    payload = _agent1_payload(
+        lead_id="FINDER-IMG",
+        candidate=BusinessCandidate(
+            placeId="place-img",
+            businessName="Bild Dach GmbH",
+            category="Logistik",
+            address="Dachstrasse 1, Frankfurt",
+            source=BusinessLeadSource.GOOGLE_PLACES,
+        ),
+        solar=FinderSolarSummary(
+            estimatedKwPeak=12.4,
+            yearlyEnergyKwh=11200,
+            panelCount=30,
+            profitabilityScore=0.81,
+            decision=Decision.PURSUE,
+        ),
+        vision=VisionAnalysis(
+            visualSolarPotentialScore=0.82,
+            roofType="flat_commercial_roof",
+            blockers=[],
+            confidence=0.8,
+        ),
+        roof_image_url="/agent2/roof-image/FINDER-IMG.png",
+        roof_image_source="GOOGLE_MAPS_STATIC",
+        image_warning=None,
+    )
+
+    assert payload["roofImageUrl"] == "/agent2/roof-image/FINDER-IMG.png"
+    assert payload["roofImageSource"] == "GOOGLE_MAPS_STATIC"

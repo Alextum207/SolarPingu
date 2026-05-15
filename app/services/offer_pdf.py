@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
+from reportlab.lib.utils import ImageReader
 from reportlab.platypus import (
+    Image as PlatypusImage,
     Paragraph,
     SimpleDocTemplate,
     Spacer,
@@ -35,6 +40,50 @@ def offer_pdf_url(lead_id: str) -> str:
 
 def _money(value: int) -> str:
     return f"{value:,.0f} EUR".replace(",", ".")
+
+
+def _agent2_image_url(solar_enrichment: dict) -> str | None:
+    url = solar_enrichment.get("roofImageUrl")
+    if not url:
+        return None
+    cleaned = str(url).strip()
+    if not cleaned:
+        return None
+    if cleaned.startswith(("http://", "https://", "data:")):
+        return cleaned
+    if cleaned.startswith("/"):
+        return f"{settings.agent2_base_url}{cleaned}"
+    return cleaned
+
+
+def _fetch_image_bytes(url: str) -> bytes | None:
+    if url.startswith("data:"):
+        return None
+    try:
+        request = Request(url, headers={"User-Agent": "SolarPingu-Agent1/1.0"})
+        with urlopen(request, timeout=8) as response:
+            content_type = response.headers.get("content-type", "")
+            if content_type and not content_type.startswith("image/"):
+                return None
+            return response.read(4_000_000)
+    except (OSError, URLError, ValueError):
+        return None
+
+
+def _roof_image_flowable(url: str) -> PlatypusImage | None:
+    image_bytes = _fetch_image_bytes(url)
+    if not image_bytes:
+        return None
+    image_buffer = BytesIO(image_bytes)
+    try:
+        width, height = ImageReader(image_buffer).getSize()
+    except Exception:
+        return None
+    image_buffer.seek(0)
+    max_width = 164 * mm
+    max_height = 78 * mm
+    scale = min(max_width / width, max_height / height, 1)
+    return PlatypusImage(image_buffer, width=width * scale, height=height * scale)
 
 
 def generate_offer_pdf(
@@ -129,6 +178,8 @@ def generate_offer_pdf(
     story += [table, Spacer(1, 10)]
 
     solar = solar_enrichment.get("solar_potential", {})
+    roof_image_url = _agent2_image_url(solar_enrichment)
+    roof_image = _roof_image_flowable(roof_image_url) if roof_image_url else None
     story += [
         Paragraph("Wirtschaftliche Entscheidung", h2),
         Paragraph(" ".join(profitability.reasons) or "Projekt wurde regelbasiert bewertet.", body),
@@ -145,8 +196,22 @@ def generate_offer_pdf(
             f"Konfidenz: {round(float(solar.get('confidence', 0)) * 100)}%.",
             body,
         ),
-        Paragraph("Kundennutzen", h2),
     ]
+    if roof_image is not None:
+        story += [
+            Paragraph("Agent-2 Dachbild", h2),
+            roof_image,
+            Paragraph(
+                f"Quelle: {solar_enrichment.get('roofImageSource') or 'Agent 2 / Maps Static'}. "
+                "Das Bild dient als visuelle Vorpruefung und ersetzt keine Vor-Ort-Pruefung.",
+                small,
+            ),
+        ]
+    elif solar_enrichment.get("imageWarning"):
+        story.append(
+            Paragraph(f"Agent-2 Dachbild: {solar_enrichment.get('imageWarning')}", small)
+        )
+    story.append(Paragraph("Kundennutzen", h2))
     for item in offer.value_pitch:
         story.append(Paragraph(f"- {item}", body))
     story.append(Paragraph("Annahmen", h2))

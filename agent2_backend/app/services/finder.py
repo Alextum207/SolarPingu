@@ -299,6 +299,9 @@ class BusinessFinderService:
                     candidate=candidate,
                     solar=solar_summary,
                     vision=vision,
+                    roof_image_url=decision.roofImageUrl,
+                    roof_image_source=str(decision.roofImageSource.value),
+                    image_warning=decision.imageWarning,
                 ),
                 idempotency_key=lead_id,
             )
@@ -374,6 +377,9 @@ def _agent1_payload(
     candidate: BusinessCandidate,
     solar: FinderSolarSummary,
     vision: VisionAnalysis,
+    roof_image_url: str | None = None,
+    roof_image_source: str | None = None,
+    image_warning: str | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "leadId": lead_id,
@@ -385,6 +391,9 @@ def _agent1_payload(
         "website": candidate.website,
         "googleMapsUrl": candidate.googleMapsUrl,
         "rating": candidate.rating,
+        "roofImageUrl": roof_image_url,
+        "roofImageSource": roof_image_source,
+        "imageWarning": image_warning,
         "solar": {
             "estimatedKwPeak": solar.estimatedKwPeak,
             "yearlyEnergyKwh": solar.yearlyEnergyKwh,

@@ -288,6 +288,7 @@ async def _run_agentic_workflow(
         lead_id=lead_id,
     )
     solar = await solar_api.enrich_solar_potential(lead)
+    solar = _merge_agent2_media(stored.get("solar") or {}, solar)
     await _emit_trace(
         trace_callback,
         scope="workflow",
@@ -464,6 +465,7 @@ async def agent2_evaluate(payload: dict[str, Any]) -> dict[str, Any]:
         preferred_contact=payload.get("preferredContact") or "email",
     )
     solar = await solar_api.enrich_solar_potential(intake)
+    solar = _merge_agent2_media(payload, solar)
     decision = profitability.evaluate_profitability(intake, solar)
     offer_draft = await offer.create_offer(intake, decision, solar)
     db.upsert_agentic_lead(
@@ -562,6 +564,44 @@ async def stream_finder_from_agent1(
     )
 
 
+def _agent2_asset_url(url: str | None) -> str | None:
+    if not url:
+        return None
+    cleaned = str(url).strip()
+    if not cleaned:
+        return None
+    if cleaned.startswith(("http://", "https://", "data:")):
+        return cleaned
+    if cleaned.startswith("/"):
+        return f"{settings.agent2_base_url}{cleaned}"
+    return cleaned
+
+
+def _merge_agent2_media(existing_solar: dict[str, Any], solar: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(solar)
+    for key in (
+        "category",
+        "rating",
+        "website",
+        "googleMapsUrl",
+        "roofImageUrl",
+        "roofImageUrlRaw",
+        "roofImageSource",
+        "imageryDate",
+        "imageWarning",
+        "finderSolar",
+        "finderVision",
+        "visionWarning",
+        "publicInfoOnly",
+    ):
+        value = existing_solar.get(key)
+        if value is not None and value != "" and not merged.get(key):
+            merged[key] = value
+    if merged.get("roofImageUrl"):
+        merged["roofImageUrl"] = _agent2_asset_url(str(merged["roofImageUrl"]))
+    return merged
+
+
 @app.get("/api/finder/leads")
 def list_finder_leads(limit: int = 100) -> dict[str, Any]:
     records = db.list_agentic_leads(
@@ -599,6 +639,10 @@ async def receive_finder_lead(payload: dict[str, Any]) -> dict[str, Any]:
     vision = payload.get("vision") if isinstance(payload.get("vision"), dict) else {}
     website = str(payload.get("website") or "")
     maps_url = str(payload.get("googleMapsUrl") or "")
+    roof_image_url_raw = str(payload.get("roofImageUrl") or "").strip()
+    roof_image_url = _agent2_asset_url(roof_image_url_raw)
+    roof_image_source = str(payload.get("roofImageSource") or "").strip() or None
+    image_warning = str(payload.get("imageWarning") or "").strip() or None
 
     intake = SolarLeadIntake(
         lead_id=lead_id,
@@ -639,6 +683,10 @@ async def receive_finder_lead(payload: dict[str, Any]) -> dict[str, Any]:
             "rating": payload.get("rating"),
             "website": website,
             "googleMapsUrl": maps_url,
+            "roofImageUrl": roof_image_url,
+            "roofImageUrlRaw": roof_image_url_raw or None,
+            "roofImageSource": roof_image_source,
+            "imageWarning": image_warning,
             "finderSolar": solar,
             "finderVision": vision,
             "publicInfoOnly": payload.get("publicInfoOnly", True),
@@ -651,6 +699,7 @@ async def receive_finder_lead(payload: dict[str, Any]) -> dict[str, Any]:
         "status": "finder_lead_received",
         "handoffUrl": f"{settings.public_base_url}/api/leads/{lead_id}/handoff",
         "leadUrl": f"{settings.public_base_url}/api/leads/{lead_id}",
+        "roofImageUrl": roof_image_url,
     }
 
 
@@ -869,10 +918,8 @@ def get_offer(lead_id: str) -> dict[str, Any]:
 @app.get("/api/leads/{lead_id}/offer.pdf")
 def get_offer_pdf(lead_id: str) -> FileResponse:
     path = offer_pdf.offer_pdf_path(lead_id)
-    if not path.exists():
-        stored = db.get_agentic_lead(lead_id)
-        if stored is None or not stored.get("offer") or not stored.get("profitability"):
-            raise HTTPException(status_code=404, detail="Offer PDF not found.")
+    stored = db.get_agentic_lead(lead_id)
+    if stored is not None and stored.get("offer") and stored.get("profitability"):
         from app.models import OfferDraft, ProfitabilityDecision
 
         offer_pdf.generate_offer_pdf(
@@ -881,6 +928,8 @@ def get_offer_pdf(lead_id: str) -> FileResponse:
             OfferDraft.model_validate(stored["offer"]),
             stored.get("solar") or {},
         )
+    elif not path.exists():
+        raise HTTPException(status_code=404, detail="Offer PDF not found.")
     return FileResponse(
         path,
         media_type="application/pdf",
@@ -1116,6 +1165,9 @@ def _normalize_agentic_lead(record: dict[str, Any]) -> dict[str, Any]:
         "rating": solar.get("rating"),
         "website": solar.get("website"),
         "googleMapsUrl": solar.get("googleMapsUrl"),
+        "roofImageUrl": solar.get("roofImageUrl"),
+        "roofImageSource": solar.get("roofImageSource"),
+        "imageWarning": solar.get("imageWarning"),
         "has_offer": bool(offer_payload or profitability),
         **links,
     }
@@ -1147,6 +1199,9 @@ def _normalize_booking_lead(record: dict[str, Any]) -> dict[str, Any]:
         "rating": None,
         "website": None,
         "googleMapsUrl": None,
+        "roofImageUrl": None,
+        "roofImageSource": None,
+        "imageWarning": None,
         "has_offer": False,
         **_lead_links(lead_id, has_offer=False),
     }
