@@ -246,6 +246,79 @@ def test_finder_lead_webhook_stores_agentic_lead(monkeypatch, tmp_path) -> None:
         assert payload["solar"]["finderVision"]["visualSolarPotentialScore"] == 0.78
 
 
+def test_finder_leads_list_supports_control_board(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path / 'finder_list.db'}")
+    monkeypatch.setattr(settings, "public_base_url", "http://testserver")
+    db.init_db()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/finder/leads",
+            json={
+                "leadId": "FINDER-LIST-1",
+                "businessName": "Logistik Test",
+                "category": "Logistik",
+                "address": "Logistikring 2, Frankfurt, Germany",
+                "phone": "+4969000001",
+                "solar": {"estimatedKwPeak": 14.1, "decision": "PURSUE"},
+                "vision": {"visualSolarPotentialScore": 0.81, "roofType": "flat", "blockers": []},
+            },
+        )
+        assert response.status_code == 200
+
+        listing = client.get("/api/finder/leads")
+        assert listing.status_code == 200
+        payload = listing.json()
+        assert payload["count"] == 1
+        assert payload["leads"][0]["lead_id"] == "FINDER-LIST-1"
+        assert payload["leads"][0]["intake"]["name"] == "Logistik Test"
+        assert payload["leads"][0]["solar"]["finderSolar"]["estimatedKwPeak"] == 14.1
+
+
+def test_finder_run_proxies_to_agent2_for_frontend(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "agent2_base_url", "http://agent2.local")
+    calls = []
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {
+                "runId": "RUN-PROXY",
+                "city": "Frankfurt am Main",
+                "discoveredCount": 1,
+                "qualifiedCount": 1,
+                "sentToAgent1Count": 1,
+                "leads": [],
+            }
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            return None
+
+        async def post(self, url: str, json: dict):
+            calls.append((url, json))
+            return FakeResponse()
+
+    monkeypatch.setattr("app.main.httpx.AsyncClient", FakeAsyncClient)
+
+    with TestClient(app) as client:
+        response = client.post("/api/finder/run", json={"city": "Frankfurt am Main"})
+
+    assert response.status_code == 200
+    assert response.json()["runId"] == "RUN-PROXY"
+    assert calls == [
+        ("http://agent2.local/finder/run", {"city": "Frankfurt am Main"})
+    ]
+
+
 def test_voice_session_closes_and_notifies(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path / 'voice.db'}")
     monkeypatch.setattr(settings, "google_solar_api_key", None)

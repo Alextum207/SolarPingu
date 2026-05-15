@@ -146,6 +146,27 @@ def get_agentic_lead(lead_id: str) -> dict[str, Any] | None:
             "SELECT * FROM agentic_leads WHERE lead_id = ?",
             (lead_id,),
         ).fetchone()
+    return _agentic_row_to_dict(row)
+
+
+def list_agentic_leads(
+    *,
+    status: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    query = "SELECT * FROM agentic_leads"
+    values: list[Any] = []
+    if status:
+        query += " WHERE status = ?"
+        values.append(status)
+    query += " ORDER BY created_at DESC LIMIT ?"
+    values.append(max(1, min(limit, 500)))
+    with connection() as conn:
+        rows = conn.execute(query, values).fetchall()
+    return [data for row in rows if (data := _agentic_row_to_dict(row)) is not None]
+
+
+def _agentic_row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     if row is None:
         return None
     data = dict(row)

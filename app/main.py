@@ -5,6 +5,7 @@ from datetime import timedelta
 from typing import Annotated, Any
 from uuid import uuid4
 
+import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
@@ -273,6 +274,50 @@ async def agent2_evaluate(payload: dict[str, Any]) -> dict[str, Any]:
         "handoffUrl": f"{settings.public_base_url}/api/leads/{intake.lead_id}/handoff",
         "demoUrl": f"{settings.public_base_url}/demo/{intake.lead_id}",
     }
+
+
+@app.post("/api/finder/run")
+async def run_finder_from_agent1(payload: dict[str, Any]) -> dict[str, Any]:
+    city = str(payload.get("city") or "").strip()
+    if not city:
+        raise HTTPException(status_code=400, detail="city is required")
+
+    timeout = httpx.Timeout(120.0, connect=8.0)
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(
+                f"{settings.agent2_base_url}/finder/run",
+                json={"city": city},
+            )
+            response.raise_for_status()
+            data = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Finder Agent 2 unavailable: {exc.__class__.__name__}",
+        ) from exc
+    return data
+
+
+@app.get("/api/finder/leads")
+def list_finder_leads(limit: int = 100) -> dict[str, Any]:
+    records = db.list_agentic_leads(
+        status="finder_lead_received",
+        limit=limit,
+    )
+    leads = [
+        {
+            "lead_id": record["lead_id"],
+            "created_at": record["created_at"],
+            "status": record["status"],
+            "intake": record.get("intake"),
+            "solar": record.get("solar"),
+            "handoffUrl": f"{settings.public_base_url}/api/leads/{record['lead_id']}/handoff",
+            "leadUrl": f"{settings.public_base_url}/api/leads/{record['lead_id']}",
+        }
+        for record in records
+    ]
+    return {"count": len(leads), "leads": leads}
 
 
 @app.post("/api/finder/leads")

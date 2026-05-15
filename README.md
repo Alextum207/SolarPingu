@@ -40,6 +40,12 @@ The repository also includes a separate Finder/Agent-2 service in
 evaluate rooftop potential with Google Solar, inspect the satellite image with
 Featherless Vision, and send qualified leads into Agent 1.
 
+Frontend/control-board integrations can talk only to Agent 1:
+
+- `POST /api/finder/run` proxies `{ "city": "Frankfurt am Main" }` to Agent 2.
+- `GET /api/finder/leads` lists Finder leads received by Agent 1.
+- `POST /api/finder/leads` is the Agent-2 webhook target.
+
 Run Agent 1:
 
 ```bash
@@ -58,6 +64,12 @@ For local handoff from Finder to Agent 1, set this in `agent2_backend/.env`:
 
 ```bash
 AGENT1_WEBHOOK_URL=http://127.0.0.1:8000/api/finder/leads
+```
+
+For frontend-to-Agent-2 proxying through Agent 1, set this in the root `.env`:
+
+```bash
+AGENT2_BASE_URL=http://127.0.0.1:8001
 ```
 
 Open Finder/Agent 2 at `http://127.0.0.1:8001/`.
