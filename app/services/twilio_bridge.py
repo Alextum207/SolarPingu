@@ -70,8 +70,10 @@ def _local_fallback_response(
         "kosten",
     ]
     has_concern = any(word in current for word in concern_words)
-    ev_concern = _has_ev_concern(current) or _has_ev_concern(text)
-    annual_km = _extract_annual_km(text)
+    current_concerns = _detect_objection_keys(current)
+    current_ev_concern = "ev" in current_concerns
+    annual_km_current = _extract_annual_km(current)
+    mileage_followup = _last_agent_asked_mileage(state) and annual_km_current is not None
     rough_case = _spoken_business_case(business_case or {})
     opening_prompt = _is_opening_prompt(current)
 
@@ -83,16 +85,18 @@ def _local_fallback_response(
                 "Ja, sehr gern. Bevor ich mit Zahlen anfange: Was ist bei Ihnen gerade "
                 "die groesste Frage oder Sorge zu Solar?"
             )
-        if ev_concern and annual_km is not None:
+        if (current_ev_concern or mileage_followup) and annual_km_current is not None:
             return (
-                f"{_spoken_ev_savings(business_case or {}, annual_km, german=True)} "
+                f"{_spoken_ev_savings(business_case or {}, annual_km_current, german=True)} "
                 "Damit kann sich die Kombination aus PV, Speicher und Autoladen gut lohnen, "
                 "wenn ein relevanter Teil des Ladens zuhause passiert."
             )
+        if len(current_concerns) > 1 and not mileage_followup:
+            return _multi_concern_response(current_concerns, business_case or {})
         playbook_response = _objection_playbook_response(current, business_case or {})
         if playbook_response:
             return playbook_response
-        if has_concern and ev_concern and annual_km is None:
+        if has_concern and current_ev_concern and annual_km_current is None:
             return (
                 "Ja, beim E-Auto entscheidet vor allem Ihre Fahrleistung und wann Sie laden. "
                 "Mit Solarstrom sparen Sie gegenueber oeffentlichem Laden oft mehrere Euro pro 100 Kilometer. "
@@ -120,12 +124,12 @@ def _local_fallback_response(
         return "Absolutely. Before I start with numbers: what is your biggest question or concern about solar right now?"
     if facts["owner"] and facts["timeline"] and not facts["budget"]:
         return "That sounds like a good basis. What is your biggest concern before agreeing to an in-person planning appointment?"
-    if ev_concern and annual_km is not None:
+    if (current_ev_concern or mileage_followup) and annual_km_current is not None:
         return (
-            f"{_spoken_ev_savings(business_case or {}, annual_km, german=False)} "
+            f"{_spoken_ev_savings(business_case or {}, annual_km_current, german=False)} "
             "So PV plus battery can make sense if a meaningful share of charging happens at home."
         )
-    if has_concern and ev_concern and annual_km is None:
+    if has_concern and current_ev_concern and annual_km_current is None:
         return (
             "For the EV case, annual mileage is the key lever. Solar charging can save several euros per "
             "100 kilometers compared with public charging. Roughly how many kilometers do you drive per year?"
@@ -343,6 +347,9 @@ async def _gemini_call_response(
         "the concern is acknowledged and roughly quantified, position the on-site meeting "
         "as validation of the calculation and final planning. Use conversation_so_far as "
         "memory; never ask for the same concern again after the customer has stated it. "
+        "If the customer mentions several concerns in one answer, name the concerns briefly, "
+        "handle one of them, and ask which one to unpack next. If they bring up a new second "
+        "concern later, answer the new concern instead of returning to the first one. "
         "Use objection_playbook when it matches. Insert the actual numbers and end with a "
         "small check question like 'Ist genau das Ihre Hauptsorge?' or 'Soll ich die Annahme "
         "kurz genauer aufdroeseln?' It is better to ask once more than to close too early. "
@@ -368,6 +375,7 @@ async def _gemini_call_response(
         "agent2_plan": _planning_context(stored),
         "conversation_so_far": state["turns"][-8:],
         "known_qualification": _qualification_flags(customer_text),
+        "current_concerns": _detect_objection_keys(_normalize_for_matching(prompt)),
         "customer_prompt": prompt,
         "detected_language": lang,
         "task": "Return only the next spoken agent reply.",
@@ -497,6 +505,15 @@ def _has_ev_concern(text: str) -> bool:
             "ev",
         ]
     )
+
+
+def _last_agent_asked_mileage(state: dict[str, Any]) -> bool:
+    for turn in reversed(state.get("turns", [])):
+        if turn.get("role") != "agent":
+            continue
+        text = _normalize_for_matching(str(turn.get("text") or ""))
+        return "wie viele kilometer" in text or "how many kilometers" in text
+    return False
 
 
 def _is_opening_prompt(text: str) -> bool:
@@ -741,6 +758,57 @@ def _objection_playbook_response(current: str, business_case: dict[str, Any]) ->
     if response is None:
         return None
     return f"{response} Ist genau das gerade Ihre Hauptsorge, oder soll ich eine Annahme genauer aufdroeseln?"
+
+
+def _detect_objection_keys(current: str) -> list[str]:
+    checks = [
+        ("too_expensive", ["zu teuer", "leisten", "anschaffung", "kosten zu hoch", "gesamtpreis"]),
+        ("payback", ["amortisiert", "amortisation", "20 jahr", "geld wieder", "lohnt", "rentiert"]),
+        ("roof_space", ["passt", "zu klein", "module", "platz", "riesig", "sperrig"]),
+        ("roof_quality", ["mein dach", "dach uberhaupt", "geeignet", "dimensionierung"]),
+        ("production", ["genug strom", "haushalt", "netzstrom", "erzeugt"]),
+        ("energy_prices", ["strompreise sinken", "strompreis sinkt", "schongerechnet", "schoengerechnet"]),
+        ("hesitation", ["bedenkzeit", "unsicher", "uberlegen", "ueberlegen", "weiss nicht", "weiß nicht"]),
+        ("hidden_costs", ["alles drin", "versteckte kosten", "wechselrichter", "montage", "gerust", "geruest"]),
+        ("resale", ["haus verkaufe", "verkaufen", "umziehe", "umziehen"]),
+        ("ev", ["e-auto", "e auto", "elektroauto", "elektro", "auto", "wallbox", "laden", "ladestation", "ladesaule"]),
+    ]
+    detected = []
+    for key, words in checks:
+        if any(word in current for word in words):
+            detected.append(key)
+    return detected
+
+
+def _multi_concern_response(concerns: list[str], business_case: dict[str, Any]) -> str:
+    playbook = _objection_playbook(business_case)
+    labels = {
+        "too_expensive": "Gesamtpreis",
+        "payback": "ob es sich lohnt",
+        "roof_space": "Dachflaeche",
+        "roof_quality": "Dach-Eignung",
+        "production": "Strommenge",
+        "energy_prices": "Strompreis-Risiko",
+        "hesitation": "Unsicherheit",
+        "hidden_costs": "versteckte Kosten",
+        "resale": "Hausverkauf",
+        "ev": "E-Auto-Laden",
+    }
+    named = [labels.get(concern, concern) for concern in concerns[:3]]
+    intro = "Ich hoere da mehrere Punkte: " + ", ".join(named) + ". "
+    if "too_expensive" in concerns:
+        return intro + playbook["too_expensive"] + " Danach wuerde ich direkt den naechsten Punkt nehmen. Welcher ist Ihnen gerade wichtiger?"
+    if "hidden_costs" in concerns:
+        return intro + playbook["hidden_costs"] + " Danach koennen wir den zweiten Punkt sauber klaeren. Passt das?"
+    if "ev" in concerns:
+        return intro + (
+            "Beim E-Auto brauche ich eine Zusatzannahme, sonst rechne ich ins Blaue: "
+            "Wie viele Kilometer fahren Sie grob pro Jahr?"
+        )
+    first = concerns[0]
+    if first in playbook:
+        return intro + playbook[first] + " Soll ich danach den zweiten Punkt genauer aufdroeseln?"
+    return intro + "Lassen Sie uns das der Reihe nach machen. Welcher Punkt ist fuer Sie gerade der wichtigste?"
 
 
 def _playbook_values(business_case: dict[str, Any]) -> dict[str, str]:

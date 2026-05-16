@@ -764,6 +764,7 @@ def test_twilio_conversation_relay_websocket_uses_gemini(monkeypatch, tmp_path) 
     assert calls[0]["payload"]["business_case"]["ev_assumptions"]["ev_kwh_per_100km"] == 18
     assert "objection_playbook" in calls[0]["payload"]
     assert calls[0]["payload"]["business_case"]["module_count"] == 29
+    assert "ev" in calls[0]["payload"]["current_concerns"]
 
 
 def test_twilio_fallback_asks_for_ev_mileage_before_concluding() -> None:
@@ -891,6 +892,62 @@ def test_twilio_fallback_uses_roof_space_objection_playbook() -> None:
 
     assert "29 Modulen" in response
     assert "Flaeche" in response
+
+
+def test_twilio_fallback_handles_combined_concerns_without_losing_one() -> None:
+    response = twilio_bridge._local_fallback_response(
+        {
+            "turns": [
+                {
+                    "role": "customer",
+                    "text": "Mir ist der Gesamtpreis wichtig und ich frage mich auch wegen E-Auto laden.",
+                }
+            ]
+        },
+        "Mir ist der Gesamtpreis wichtig und ich frage mich auch wegen E-Auto laden.",
+        "de-DE",
+        {
+            "price_min_eur": 23320,
+            "price_max_eur": 27517,
+            "estimated_yearly_value_eur": 2015,
+        },
+    )
+
+    assert "mehrere Punkte" in response
+    assert "Gesamtpreis" in response
+    assert "E-Auto-Laden" in response
+    assert "23 tausend 300 Euro" in response
+
+
+def test_twilio_fallback_answers_new_second_concern_instead_of_returning_to_ev() -> None:
+    response = twilio_bridge._local_fallback_response(
+        {
+            "turns": [
+                {"role": "customer", "text": "Ich habe ein E-Auto und Sorge ob sich das lohnt."},
+                {"role": "agent", "text": "Wie viele Kilometer fahren Sie grob pro Jahr?"},
+                {"role": "customer", "text": "Circa 9000."},
+                {
+                    "role": "customer",
+                    "text": "Meine zweite Sorge ist aber ob Montage und Wechselrichter im Preis drin sind.",
+                },
+            ]
+        },
+        "Meine zweite Sorge ist aber ob Montage und Wechselrichter im Preis drin sind.",
+        "de-DE",
+        {
+            "price_min_eur": 23320,
+            "price_max_eur": 27517,
+            "ev_assumptions": {
+                "ev_kwh_per_100km": 18,
+                "public_charging_eur_per_kwh": 0.55,
+                "solar_charging_value_eur_per_kwh": 0.15,
+            },
+        },
+    )
+
+    assert "Montage" in response or "Zaehlerschrank" in response
+    assert "23 tausend 300 Euro" in response
+    assert "9 tausend Kilometern" not in response
 
 
 def test_gemini_text_returns_fallback_on_rate_limit(monkeypatch) -> None:
