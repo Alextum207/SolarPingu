@@ -68,6 +68,10 @@ def _local_fallback_response(
         "wallbox",
         "laden",
         "kosten",
+        "sonne",
+        "wetter",
+        "winter",
+        "frankfurt",
     ]
     has_concern = any(word in current for word in concern_words)
     current_concerns = _detect_objection_keys(current)
@@ -347,6 +351,10 @@ async def _gemini_call_response(
         "the concern is acknowledged and roughly quantified, position the on-site meeting "
         "as validation of the calculation and final planning. Use conversation_so_far as "
         "memory; never ask for the same concern again after the customer has stated it. "
+        "For concerns about Frankfurt, weather, winter, rain, clouds, or whether the sun shines "
+        "enough, explain that PV does not need constant direct sun and also works with diffuse "
+        "daylight. Use the annual kWh estimate as the anchor, then ask if they worry more about "
+        "winter days or the full-year yield. "
         "If the customer mentions several concerns in one answer, name the concerns briefly, "
         "handle one of them, and ask which one to unpack next. If they bring up a new second "
         "concern later, answer the new concern instead of returning to the first one. "
@@ -731,6 +739,12 @@ def _objection_playbook(business_case: dict[str, Any]) -> dict[str, str]:
             "kann den Wert der Immobilie staerken. Fuer Kaeufer ist ein Haus mit niedrigeren "
             "Nebenkosten ein sehr konkretes Argument."
         ),
+        "sunlight_region": (
+            "In Frankfurt muss nicht immer die Sonne scheinen, damit Photovoltaik funktioniert. "
+            "Die Anlage arbeitet auch mit diffusem Tageslicht; entscheidend ist der Ertrag ueber "
+            f"das ganze Jahr. Bei Ihren Daten rechnen wir grob mit {values['yearly_kwh']} "
+            "Kilowattstunden pro Jahr."
+        ),
     }
 
 
@@ -755,6 +769,8 @@ def _objection_playbook_response(current: str, business_case: dict[str, Any]) ->
         response = playbook["hidden_costs"]
     elif any(word in current for word in ["haus verkaufe", "verkaufen", "umziehe", "umziehen"]):
         response = playbook["resale"]
+    elif any(word in current for word in ["sonne", "sonnig", "scheint", "frankfurt", "wetter", "bewolkt", "regen", "winter"]):
+        response = playbook["sunlight_region"]
     if response is None:
         return None
     return f"{response} Ist genau das gerade Ihre Hauptsorge, oder soll ich eine Annahme genauer aufdroeseln?"
@@ -771,6 +787,7 @@ def _detect_objection_keys(current: str) -> list[str]:
         ("hesitation", ["bedenkzeit", "unsicher", "uberlegen", "ueberlegen", "weiss nicht", "weiß nicht"]),
         ("hidden_costs", ["alles drin", "versteckte kosten", "wechselrichter", "montage", "gerust", "geruest"]),
         ("resale", ["haus verkaufe", "verkaufen", "umziehe", "umziehen"]),
+        ("sunlight_region", ["sonne", "sonnig", "scheint", "frankfurt", "wetter", "bewolkt", "regen", "winter"]),
         ("ev", ["e-auto", "e auto", "elektroauto", "elektro", "auto", "wallbox", "laden", "ladestation", "ladesaule"]),
     ]
     detected = []
@@ -792,6 +809,7 @@ def _multi_concern_response(concerns: list[str], business_case: dict[str, Any]) 
         "hesitation": "Unsicherheit",
         "hidden_costs": "versteckte Kosten",
         "resale": "Hausverkauf",
+        "sunlight_region": "Sonne in Frankfurt",
         "ev": "E-Auto-Laden",
     }
     named = [labels.get(concern, concern) for concern in concerns[:3]]
@@ -805,6 +823,8 @@ def _multi_concern_response(concerns: list[str], business_case: dict[str, Any]) 
             "Beim E-Auto brauche ich eine Zusatzannahme, sonst rechne ich ins Blaue: "
             "Wie viele Kilometer fahren Sie grob pro Jahr?"
         )
+    if "sunlight_region" in concerns:
+        return intro + playbook["sunlight_region"] + " Ist Ihre Sorge eher der Winter oder ob der Jahresertrag insgesamt reicht?"
     first = concerns[0]
     if first in playbook:
         return intro + playbook[first] + " Soll ich danach den zweiten Punkt genauer aufdroeseln?"

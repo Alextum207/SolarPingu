@@ -894,6 +894,29 @@ def test_twilio_fallback_uses_roof_space_objection_playbook() -> None:
     assert "Flaeche" in response
 
 
+def test_twilio_fallback_handles_frankfurt_sun_concern() -> None:
+    response = twilio_bridge._local_fallback_response(
+        {
+            "turns": [
+                {
+                    "role": "customer",
+                    "text": "Ich weiss nicht ob in Frankfurt immer die Sonne scheint.",
+                }
+            ]
+        },
+        "Ich weiss nicht ob in Frankfurt immer die Sonne scheint.",
+        "de-DE",
+        {
+            "yearly_energy_kwh": 8541,
+        },
+    )
+
+    assert "Frankfurt muss nicht immer die Sonne scheinen" in response
+    assert "8 tausend 500 Kilowattstunden" in response
+    assert "Sonne in Frankfurt" in response
+    assert "Winter" in response or "Jahresertrag" in response
+
+
 def test_twilio_fallback_handles_combined_concerns_without_losing_one() -> None:
     response = twilio_bridge._local_fallback_response(
         {
