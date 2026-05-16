@@ -758,6 +758,46 @@ def test_twilio_conversation_relay_websocket_uses_gemini(monkeypatch, tmp_path) 
     assert calls[0]["payload"]["business_case"]["payback_years"]
     assert "Do not jump straight to an installer appointment" in calls[0]["system_prompt"]
     assert "never ask for the same concern again" in calls[0]["system_prompt"]
+    assert "how many kilometers they drive per year" in calls[0]["system_prompt"]
+    assert calls[0]["payload"]["business_case"]["ev_assumptions"]["ev_kwh_per_100km"] == 18
+
+
+def test_twilio_fallback_asks_for_ev_mileage_before_concluding() -> None:
+    response = twilio_bridge._local_fallback_response(
+        {"turns": [{"role": "customer", "text": "Ich habe ein E-Auto und Sorge wegen Speicher."}]},
+        "Ich habe ein E-Auto und Sorge wegen Speicher.",
+        "de-DE",
+        {"ev_assumptions": {"saving_vs_public_charging_eur_per_100km": 7.2}},
+    )
+
+    assert "Wie viele Kilometer" in response
+    assert "pro Jahr" in response
+
+
+def test_twilio_fallback_calculates_ev_savings_with_mileage() -> None:
+    response = twilio_bridge._local_fallback_response(
+        {
+            "turns": [
+                {
+                    "role": "customer",
+                    "text": "Ich fahre 15000 km pro Jahr und habe Sorge, ob sich Solar mit E-Auto lohnt.",
+                }
+            ]
+        },
+        "Ich fahre 15000 km pro Jahr und habe Sorge, ob sich Solar mit E-Auto lohnt.",
+        "de-DE",
+        {
+            "ev_assumptions": {
+                "ev_kwh_per_100km": 18,
+                "public_charging_eur_per_kwh": 0.55,
+                "solar_charging_value_eur_per_kwh": 0.15,
+            }
+        },
+    )
+
+    assert "15.000 Kilometern" in response
+    assert "7 Euro pro 100 Kilometer" in response
+    assert "1.080 Euro pro Jahr" in response
 
 
 def test_gemini_text_returns_fallback_on_rate_limit(monkeypatch) -> None:

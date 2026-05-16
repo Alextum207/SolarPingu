@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 from pathlib import PurePosixPath
+import re
 from urllib.parse import urlencode
 import unicodedata
 from typing import Any
@@ -69,11 +70,25 @@ def _local_fallback_response(
         "kosten",
     ]
     has_concern = any(word in current for word in concern_words)
+    ev_concern = _has_ev_concern(current) or _has_ev_concern(text)
+    annual_km = _extract_annual_km(text)
     rough_case = _spoken_business_case(business_case or {})
 
     if german:
         if wants_repeat and len(state.get("turns", [])) <= 2:
             return "Ja, ich hoere Sie. Ich habe Ihre Anfrage vor mir und gehe gern konkret auf Ihre Solarfrage ein."
+        if has_concern and ev_concern and annual_km is None:
+            return (
+                "Ja, beim E-Auto entscheidet vor allem Ihre Fahrleistung und wann Sie laden. "
+                "Mit Solarstrom sparen Sie gegenueber oeffentlichem Laden oft mehrere Euro pro 100 Kilometer. "
+                "Wie viele Kilometer fahren Sie grob pro Jahr?"
+            )
+        if has_concern and ev_concern and annual_km is not None:
+            return (
+                f"{_spoken_ev_savings(business_case or {}, annual_km, german=True)} "
+                "Damit kann sich die Kombination aus PV, Speicher und Autoladen gut lohnen, "
+                "wenn ein relevanter Teil des Ladens zuhause passiert."
+            )
         if has_concern:
             return (
                 f"Ja, genau diese Rentabilitaetsfrage ist wichtig. {rough_case} "
@@ -97,6 +112,16 @@ def _local_fallback_response(
 
     if facts["owner"] and facts["timeline"] and not facts["budget"]:
         return "That sounds like a good basis. What is your biggest concern before agreeing to an in-person planning appointment?"
+    if has_concern and ev_concern and annual_km is None:
+        return (
+            "For the EV case, annual mileage is the key lever. Solar charging can save several euros per "
+            "100 kilometers compared with public charging. Roughly how many kilometers do you drive per year?"
+        )
+    if has_concern and ev_concern and annual_km is not None:
+        return (
+            f"{_spoken_ev_savings(business_case or {}, annual_km, german=False)} "
+            "So PV plus battery can make sense if a meaningful share of charging happens at home."
+        )
     if has_concern:
         return (
             f"That return question is exactly the right one. {rough_case} "
@@ -300,7 +325,10 @@ async def _gemini_call_response(
         "When they ask if it is worth it, mention 1-2 rough numbers from business_case "
         "such as system size, yearly kWh, price range, yearly value, or payback. Explain "
         "what that means for their specific worry, for example EV charging, battery value, "
-        "financing, or risk. Do not jump straight to an installer appointment. Only after "
+        "financing, or risk. For EV or wallbox concerns: if annual kilometers are missing, "
+        "ask how many kilometers they drive per year before concluding. If annual kilometers "
+        "are known, estimate EV charging savings using business_case.ev_assumptions and say "
+        "the rough saving per 100 km and per year. Do not jump straight to an installer appointment. Only after "
         "the concern is acknowledged and roughly quantified, position the on-site meeting "
         "as validation of the calculation and final planning. Use conversation_so_far as "
         "memory; never ask for the same concern again after the customer has stated it. "
@@ -434,6 +462,41 @@ async def download_recording_audio(
     }
 
 
+def _has_ev_concern(text: str) -> bool:
+    return any(
+        word in text
+        for word in [
+            "e-auto",
+            "e auto",
+            "elektroauto",
+            "elektro",
+            "auto",
+            "wallbox",
+            "laden",
+            "ladestation",
+            "ladesaule",
+            "charging",
+            "ev",
+        ]
+    )
+
+
+def _extract_annual_km(text: str) -> int | None:
+    patterns = [
+        r"(\d{1,3}(?:[.\s]\d{3})+|\d{4,6})\s*(?:km|kilometer)",
+        r"(?:km|kilometer)\s*(\d{1,3}(?:[.\s]\d{3})+|\d{4,6})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            value = re.sub(r"\D", "", match.group(1))
+            if value:
+                km = int(value)
+                if 1000 <= km <= 100000:
+                    return km
+    return None
+
+
 def _business_case_context(stored: dict[str, Any], lead: SolarLeadIntake) -> dict[str, Any]:
     solar = stored.get("solar") or {}
     potential = solar.get("solar_potential") or {}
@@ -467,6 +530,12 @@ def _business_case_context(stored: dict[str, Any], lead: SolarLeadIntake) -> dic
         "estimated_yearly_value_eur": estimated_yearly_value,
         "includes_battery": offer.get("includes_battery") or lead.battery_interest,
         "ev_or_wallbox_interest": lead.wallbox_interest,
+        "ev_assumptions": {
+            "ev_kwh_per_100km": 18,
+            "public_charging_eur_per_kwh": 0.55,
+            "solar_charging_value_eur_per_kwh": 0.15,
+            "saving_vs_public_charging_eur_per_100km": 7.2,
+        },
         "main_concern": lead.main_concern,
         "assumptions": [
             "Rough phone estimate only; roof, shade, meter cabinet and load profile need installer validation.",
@@ -484,16 +553,49 @@ def _spoken_business_case(business_case: dict[str, Any]) -> str:
     yearly_value = business_case.get("estimated_yearly_value_eur")
     parts = []
     if kwp and yearly_kwh:
-        parts.append(f"grob sehen wir etwa {kwp:g} kWp und rund {int(yearly_kwh):,} kWh pro Jahr".replace(",", "."))
+        parts.append(f"grob sehen wir etwa {kwp:g} kWp und rund {_format_de_int(yearly_kwh)} kWh pro Jahr")
     if price_min and price_max:
-        parts.append(f"eine Investition um {int(price_min):,} bis {int(price_max):,} Euro".replace(",", "."))
+        parts.append(f"eine Investition um {_format_de_int(price_min)} bis {_format_de_int(price_max)} Euro")
     if yearly_value:
-        parts.append(f"grob {int(yearly_value):,} Euro Jahreswert bei gutem Eigenverbrauch".replace(",", "."))
+        parts.append(f"grob {_format_de_int(yearly_value)} Euro Jahreswert bei gutem Eigenverbrauch")
     if payback:
         parts.append(f"Amortisation grob um {float(payback):g} Jahre")
     if not parts:
         return "Die Wirtschaftlichkeit haengt vor allem an Eigenverbrauch, Dachflaeche, Speichergroesse und Strompreis."
     return "; ".join(parts) + "."
+
+
+def _spoken_ev_savings(
+    business_case: dict[str, Any],
+    annual_km: int,
+    *,
+    german: bool,
+) -> str:
+    assumptions = business_case.get("ev_assumptions") or {}
+    ev_kwh_per_100km = float(assumptions.get("ev_kwh_per_100km") or 18)
+    public_price = float(assumptions.get("public_charging_eur_per_kwh") or 0.55)
+    solar_value = float(assumptions.get("solar_charging_value_eur_per_kwh") or 0.15)
+    saving_per_100km = ev_kwh_per_100km * max(public_price - solar_value, 0)
+    yearly_saving = int(round((annual_km / 100) * saving_per_100km / 10) * 10)
+    if german:
+        return (
+            f"Bei grob {_format_de_int(annual_km)} Kilometern pro Jahr braucht das E-Auto etwa "
+            f"{_format_de_int((annual_km / 100) * ev_kwh_per_100km)} kWh. "
+            f"Gegenueber oeffentlichem Laden sparen Sie mit Solarstrom grob "
+            f"{saving_per_100km:.0f} Euro pro 100 Kilometer, also etwa "
+            f"{_format_de_int(yearly_saving)} Euro pro Jahr."
+        )
+    return (
+        f"At roughly {annual_km:,} kilometers per year, the EV needs about "
+        f"{int((annual_km / 100) * ev_kwh_per_100km):,} kWh. "
+        f"Compared with public charging, solar charging can save roughly "
+        f"{saving_per_100km:.0f} euros per 100 kilometers, or about "
+        f"{yearly_saving:,} euros per year."
+    )
+
+
+def _format_de_int(value: Any) -> str:
+    return f"{int(value):,}".replace(",", ".")
 
 
 def _planning_context(stored: dict[str, Any]) -> dict[str, Any]:
