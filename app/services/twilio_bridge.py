@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 from pathlib import PurePosixPath
+from urllib.parse import urlencode
 import unicodedata
 from typing import Any
 
@@ -131,7 +132,8 @@ async def create_customer_call(
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.post(
             url,
-            data=data,
+            content=urlencode(data),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
             auth=(settings.twilio_account_sid or "", settings.twilio_auth_token or ""),
         )
         if response.status_code >= 400:

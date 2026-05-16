@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta
+from urllib.parse import parse_qs
 
 import httpx
 import pytest
@@ -664,9 +665,10 @@ def test_twilio_customer_call_posts_async_form_payload(monkeypatch) -> None:
         async def __aexit__(self, *args) -> None:
             return None
 
-        async def post(self, url, *, data=None, auth=None):
+        async def post(self, url, *, content=None, headers=None, auth=None):
             captured["url"] = url
-            captured["data"] = data
+            captured["content"] = content
+            captured["headers"] = headers
             captured["auth"] = auth
             return FakeResponse()
 
@@ -682,11 +684,12 @@ def test_twilio_customer_call_posts_async_form_payload(monkeypatch) -> None:
     assert result == {"sid": "CA_TEST", "status": "queued"}
     assert captured["url"] == "https://api.twilio.test/2010-04-01/Accounts/AC_TEST/Calls.json"
     assert captured["auth"] == ("AC_TEST", "token_test")
-    assert ("Url", "https://agent1.example.com/webhooks/twilio/voice/SL-TEST") in captured["data"]
-    assert (
-        "RecordingStatusCallback",
-        "https://agent1.example.com/webhooks/twilio/recording/SL-TEST",
-    ) in captured["data"]
+    assert captured["headers"] == {"Content-Type": "application/x-www-form-urlencoded"}
+    form = parse_qs(captured["content"])
+    assert form["Url"] == ["https://agent1.example.com/webhooks/twilio/voice/SL-TEST"]
+    assert form["RecordingStatusCallback"] == [
+        "https://agent1.example.com/webhooks/twilio/recording/SL-TEST"
+    ]
 
 
 def test_twilio_conversation_relay_websocket_uses_gemini(monkeypatch, tmp_path) -> None:
