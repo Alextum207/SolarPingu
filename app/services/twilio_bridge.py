@@ -77,6 +77,12 @@ def _local_fallback_response(
     if german:
         if wants_repeat and len(state.get("turns", [])) <= 2:
             return "Ja, ich hoere Sie. Ich habe Ihre Anfrage vor mir und gehe gern konkret auf Ihre Solarfrage ein."
+        if ev_concern and annual_km is not None:
+            return (
+                f"{_spoken_ev_savings(business_case or {}, annual_km, german=True)} "
+                "Damit kann sich die Kombination aus PV, Speicher und Autoladen gut lohnen, "
+                "wenn ein relevanter Teil des Ladens zuhause passiert."
+            )
         playbook_response = _objection_playbook_response(current, business_case or {})
         if playbook_response:
             return playbook_response
@@ -85,12 +91,6 @@ def _local_fallback_response(
                 "Ja, beim E-Auto entscheidet vor allem Ihre Fahrleistung und wann Sie laden. "
                 "Mit Solarstrom sparen Sie gegenueber oeffentlichem Laden oft mehrere Euro pro 100 Kilometer. "
                 "Wie viele Kilometer fahren Sie grob pro Jahr?"
-            )
-        if has_concern and ev_concern and annual_km is not None:
-            return (
-                f"{_spoken_ev_savings(business_case or {}, annual_km, german=True)} "
-                "Damit kann sich die Kombination aus PV, Speicher und Autoladen gut lohnen, "
-                "wenn ein relevanter Teil des Ladens zuhause passiert."
             )
         if has_concern:
             return (
@@ -115,15 +115,15 @@ def _local_fallback_response(
 
     if facts["owner"] and facts["timeline"] and not facts["budget"]:
         return "That sounds like a good basis. What is your biggest concern before agreeing to an in-person planning appointment?"
+    if ev_concern and annual_km is not None:
+        return (
+            f"{_spoken_ev_savings(business_case or {}, annual_km, german=False)} "
+            "So PV plus battery can make sense if a meaningful share of charging happens at home."
+        )
     if has_concern and ev_concern and annual_km is None:
         return (
             "For the EV case, annual mileage is the key lever. Solar charging can save several euros per "
             "100 kilometers compared with public charging. Roughly how many kilometers do you drive per year?"
-        )
-    if has_concern and ev_concern and annual_km is not None:
-        return (
-            f"{_spoken_ev_savings(business_case or {}, annual_km, german=False)} "
-            "So PV plus battery can make sense if a meaningful share of charging happens at home."
         )
     if has_concern:
         return (
@@ -492,6 +492,7 @@ def _extract_annual_km(text: str) -> int | None:
     patterns = [
         r"(\d{1,3}(?:[.\s]\d{3})+|\d{4,6})\s*(?:km|kilometer)",
         r"(?:km|kilometer)\s*(\d{1,3}(?:[.\s]\d{3})+|\d{4,6})",
+        r"(?:circa|ca|ungefahr|ungefaehr|rund|etwa|grob)?\s*(\d{4,6})(?:\s*(?:im|pro)\s*jahr)?",
     ]
     for pattern in patterns:
         match = re.search(pattern, text)
@@ -501,6 +502,42 @@ def _extract_annual_km(text: str) -> int | None:
                 km = int(value)
                 if 1000 <= km <= 100000:
                     return km
+    word_km = _extract_annual_km_word(text)
+    if word_km is not None:
+        return word_km
+    return None
+
+
+def _extract_annual_km_word(text: str) -> int | None:
+    compact = re.sub(r"[\s-]+", "", text)
+    number_words = {
+        "eintausend": 1000,
+        "zweitausend": 2000,
+        "dreitausend": 3000,
+        "viertausend": 4000,
+        "funftausend": 5000,
+        "fuenftausend": 5000,
+        "sechstausend": 6000,
+        "siebentausend": 7000,
+        "achttausend": 8000,
+        "neuntausend": 9000,
+        "zehntausend": 10000,
+        "elftausend": 11000,
+        "zwolftausend": 12000,
+        "zwoelftausend": 12000,
+        "dreizehntausend": 13000,
+        "vierzehntausend": 14000,
+        "funfzehntausend": 15000,
+        "fuenfzehntausend": 15000,
+        "sechzehntausend": 16000,
+        "siebzehntausend": 17000,
+        "achtzehntausend": 18000,
+        "neunzehntausend": 19000,
+        "zwanzigtausend": 20000,
+    }
+    for word, km in number_words.items():
+        if word in compact:
+            return km
     return None
 
 

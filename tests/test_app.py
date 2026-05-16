@@ -804,6 +804,30 @@ def test_twilio_fallback_calculates_ev_savings_with_mileage() -> None:
     assert "1.080 Euro pro Jahr" in response
 
 
+def test_twilio_fallback_understands_spoken_ev_mileage_words() -> None:
+    response = twilio_bridge._local_fallback_response(
+        {
+            "turns": [
+                {"role": "customer", "text": "Ich habe ein E-Auto."},
+                {"role": "agent", "text": "Wie viele Kilometer fahren Sie grob pro Jahr?"},
+                {"role": "customer", "text": "So circa neuntausend."},
+            ]
+        },
+        "So circa neuntausend.",
+        "de-DE",
+        {
+            "ev_assumptions": {
+                "ev_kwh_per_100km": 18,
+                "public_charging_eur_per_kwh": 0.55,
+                "solar_charging_value_eur_per_kwh": 0.15,
+            }
+        },
+    )
+
+    assert "9.000 Kilometern" in response
+    assert "650 Euro pro Jahr" in response
+
+
 def test_twilio_fallback_uses_price_objection_playbook() -> None:
     response = twilio_bridge._local_fallback_response(
         {"turns": [{"role": "customer", "text": "Das ist mir zu teuer."}]},
