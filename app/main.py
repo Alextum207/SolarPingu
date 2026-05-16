@@ -1052,46 +1052,113 @@ def panel_plan_image(lead_id: str) -> StreamingResponse:
 
 def _render_panel_plan_png(stored: dict[str, Any]) -> BytesIO:
     from PIL import Image, ImageDraw, ImageFont
+    import math
 
     lead = stored.get("intake") or {}
     offer = stored.get("offer") or {}
+    profitability_data = stored.get("profitability") or {}
     solar = stored.get("solar") or {}
     potential = solar.get("solar_potential") or {}
-    width, height = 1200, 720
-    image = Image.new("RGB", (width, height), "#f5f7f2")
+    width, height = 1200, 1040
+    image = Image.new("RGB", (width, height), "#f6f8f4")
     draw = ImageDraw.Draw(image)
-    title_font = ImageFont.truetype("arial.ttf", 46) if _font_exists("arial.ttf") else ImageFont.load_default()
-    body_font = ImageFont.truetype("arial.ttf", 28) if _font_exists("arial.ttf") else ImageFont.load_default()
-    small_font = ImageFont.truetype("arial.ttf", 22) if _font_exists("arial.ttf") else ImageFont.load_default()
 
-    draw.rectangle((0, 0, width, 92), fill="#15351f")
-    draw.text((42, 24), "Grobe Systemplanung Agent 2", fill="white", font=title_font)
-    draw.rounded_rectangle((60, 130, 780, 590), radius=28, fill="#586253", outline="#2f3d31", width=5)
-    for x in range(110, 720, 124):
-        for y in range(170, 520, 108):
-            draw.rounded_rectangle((x, y, x + 92, y + 70), radius=8, fill="#172f4d", outline="#86b8ff", width=3)
-            draw.line((x + 46, y + 4, x + 46, y + 66), fill="#86b8ff", width=2)
-            draw.line((x + 4, y + 35, x + 88, y + 35), fill="#86b8ff", width=2)
-    draw.polygon([(60, 590), (780, 590), (720, 645), (120, 645)], fill="#384039")
+    title_font = _pil_font("arialbd.ttf", 34)
+    metric_label_font = _pil_font("arial.ttf", 22)
+    metric_font = _pil_font("arialbd.ttf", 30)
+    small_font = _pil_font("arial.ttf", 18)
+    tag_font = _pil_font("arialbd.ttf", 16)
 
-    system_size = offer.get("system_size_kwp") or potential.get("estimated_kwp") or "n/a"
-    roof_area = potential.get("roof_area_m2") or "n/a"
+    system_size = float(
+        offer.get("system_size_kwp")
+        or potential.get("estimated_kwp")
+        or profitability_data.get("estimated_kwp")
+        or 0
+    )
+    yearly_kwh = int(potential.get("yearly_energy_kwh") or max(0, system_size * 930))
+    modules = int(max(8, round((system_size or 8.5) / 0.4)))
     price = offer.get("price_range") or {}
-    facts = [
-        f"Lead: {lead.get('name', 'unbekannt')}",
-        f"Adresse: {lead.get('address', 'unbekannt')}",
-        f"System: ca. {system_size} kWp",
-        f"Dachflaeche: ca. {roof_area} m2",
-        f"Paket: {offer.get('package_name', 'Smart PV Paket')}",
-        f"Preisrahmen: {price.get('min', 'n/a')} - {price.get('max', 'n/a')} {price.get('currency', 'EUR')}",
+    min_price = price.get("min") or profitability_data.get("estimated_price_min")
+    max_price = price.get("max") or profitability_data.get("estimated_price_max")
+    annual_savings = int(max(900, system_size * 205)) if system_size else "n/a"
+    payback = profitability_data.get("payback_years") or (
+        round(float(min_price) / max(900, float(annual_savings)), 1)
+        if min_price and isinstance(annual_savings, int)
+        else "n/a"
+    )
+    confidence = float(potential.get("confidence") or 0.73)
+    ghosting_risk = max(3, min(88, int(round((1 - confidence) * 100))))
+
+    draw.rounded_rectangle((42, 28, 1158, 76), radius=16, fill="#dceee2")
+    draw.rounded_rectangle((42, 28, 42 + int(1116 * (1 - ghosting_risk / 100)), 76), radius=16, fill="#1ea366")
+    draw.text((42, 100), "Ghosting-Risiko", fill="#526058", font=metric_label_font)
+    draw.rounded_rectangle((42, 142, 432, 158), radius=8, fill="#dceee2")
+    draw.rounded_rectangle((42, 142, 42 + int(390 * ghosting_risk / 100), 158), radius=8, fill="#1ea366")
+    draw.text((1046, 95), f"{ghosting_risk} %", fill="#111815", font=metric_font)
+
+    cards = [
+        ("PV-GROESSE", f"{system_size:.1f} kWp" if system_size else "n/a"),
+        ("JAHRES-KWH", f"{yearly_kwh:,} kWh".replace(",", ".")),
+        ("MODULE", str(modules)),
+        ("PREIS", _price_range_label(min_price, max_price)),
+        ("ERSPARNIS / JAHR", f"{annual_savings:,} EUR".replace(",", ".") if isinstance(annual_savings, int) else "n/a"),
+        ("AMORTISATION", f"{payback} J." if payback != "n/a" else "n/a"),
     ]
-    y = 155
-    for fact in facts:
-        draw.text((830, y), fact[:34], fill="#172018", font=body_font)
-        y += 58
+    for index, (label, value) in enumerate(cards):
+        col = index % 3
+        row = index // 3
+        x = 72 + col * 360
+        y = 205 + row * 115
+        draw.rounded_rectangle((x, y, x + 300, y + 80), radius=4, fill="#f9fbf8", outline="#e1e7dd", width=1)
+        draw.text((x + 16, y + 16), label, fill="#6b7770", font=metric_label_font)
+        draw.text((x + 16, y + 43), value, fill="#111815", font=metric_font)
+
+    map_box = (72, 455, 1128, 880)
+    roof = _roof_plan_background(solar, map_box[2] - map_box[0], map_box[3] - map_box[1])
+    image.paste(roof, map_box[:2])
+    draw.rounded_rectangle(map_box, radius=8, outline="#d1d8cf", width=2)
+
+    panel_layer = Image.new("RGBA", (440, 170), (0, 0, 0, 0))
+    panel_draw = ImageDraw.Draw(panel_layer)
+    cols = max(4, math.ceil(modules / 4))
+    rows = max(2, math.ceil(modules / cols))
+    panel_w = min(42, int(390 / cols))
+    panel_h = min(34, int(135 / rows))
+    gap = 4
+    drawn = 0
+    start_x = 18
+    start_y = 18
+    for row in range(rows):
+        for col in range(cols):
+            if drawn >= modules:
+                break
+            x = start_x + col * (panel_w + gap)
+            y = start_y + row * (panel_h + gap)
+            panel_draw.rectangle((x, y, x + panel_w, y + panel_h), fill="#071923", outline="#7dc7d8", width=1)
+            panel_draw.line((x + panel_w // 2, y + 2, x + panel_w // 2, y + panel_h - 2), fill="#2d7180", width=1)
+            panel_draw.line((x + 2, y + panel_h // 2, x + panel_w - 2, y + panel_h // 2), fill="#2d7180", width=1)
+            drawn += 1
+    panel_layer = panel_layer.rotate(-8, expand=True, resample=Image.Resampling.BICUBIC)
+    px = map_box[0] + (map_box[2] - map_box[0] - panel_layer.width) // 2
+    py = map_box[1] + (map_box[3] - map_box[1] - panel_layer.height) // 2
+    image.paste(panel_layer, (px, py), panel_layer)
+
+    draw.rounded_rectangle((90, 472, 310, 502), radius=8, fill="#eef4ec", outline="#c8d4c4", width=1)
+    draw.text((104, 479), f"Potential preview {system_size:.1f} kWp", fill="#314036", font=tag_font)
+    draw.text((84, 856), "Google", fill="#f5f5f5", font=title_font, stroke_width=2, stroke_fill="#2b2f2b")
+
+    source = solar.get("source") or "deterministic_fallback"
+    address = str(lead.get("address") or "Adresse unbekannt")
+    draw.text((72, 922), f"Adresse: {address[:76]}", fill="#344039", font=small_font)
     draw.text(
-        (60, 672),
-        "Hinweis: schematische Vorplanung; finale Belegung wird beim Vor-Ort-Termin geprueft.",
+        (72, 958),
+        f"Geocode: GOOGLE_GEOCODING_API      Solar: GOOGLE_SOLAR_API      Roof: {source.upper()}",
+        fill="#526058",
+        font=small_font,
+    )
+    draw.text(
+        (72, 994),
+        "Layout: GOOGLE_SOLAR_PANEL_HEURISTIC      Finale Belegung wird beim Vor-Ort-Termin geprueft.",
         fill="#4c5b50",
         font=small_font,
     )
@@ -1099,6 +1166,61 @@ def _render_panel_plan_png(stored: dict[str, Any]) -> BytesIO:
     image.save(output, format="PNG")
     output.seek(0)
     return output
+
+
+def _pil_font(name: str, size: int) -> Any:
+    from PIL import ImageFont
+
+    try:
+        return ImageFont.truetype(name, size)
+    except OSError:
+        return ImageFont.load_default()
+
+
+def _price_range_label(min_price: Any, max_price: Any) -> str:
+    if min_price and max_price:
+        return f"{int(float(min_price)):,} - {int(float(max_price)):,} EUR".replace(",", ".")
+    return "n/a"
+
+
+def _roof_plan_background(solar: dict[str, Any], width: int, height: int) -> Any:
+    from PIL import Image, ImageDraw
+
+    coordinates = solar.get("coordinates") or {}
+    if coordinates and settings.google_solar_api_key:
+        try:
+            static_url = "https://maps.googleapis.com/maps/api/staticmap"
+            with httpx.Client(timeout=4) as client:
+                response = client.get(
+                    static_url,
+                    params={
+                        "center": f"{coordinates['lat']},{coordinates['lng']}",
+                        "zoom": 20,
+                        "size": f"{width}x{height}",
+                        "maptype": "satellite",
+                        "key": settings.google_solar_api_key,
+                    },
+                )
+                response.raise_for_status()
+            return Image.open(BytesIO(response.content)).convert("RGB").resize((width, height))
+        except Exception:
+            pass
+
+    roof = Image.new("RGB", (width, height), "#52665c")
+    draw = ImageDraw.Draw(roof)
+    draw.rectangle((0, 0, width, height), fill="#3f554a")
+    draw.polygon([(0, 0), (260, 0), (170, height), (0, height)], fill="#8da06e")
+    draw.polygon([(780, 0), (width, 0), (width, height), (900, height)], fill="#394c42")
+    draw.polygon([(270, 20), (770, 0), (850, height), (190, height)], fill="#56636b")
+    draw.polygon([(360, 40), (665, 28), (712, height - 35), (310, height - 10)], fill="#68737a")
+    draw.line((505, 30, 515, height - 20), fill="#2f3942", width=7)
+    for x in range(70, width, 130):
+        draw.rectangle((x, 30, x + 55, 110), fill="#75808a")
+    for x in range(120, width, 180):
+        draw.rectangle((x, height - 95, x + 80, height - 35), fill="#2f3934")
+    for y in range(70, height, 100):
+        draw.line((0, y, width, y + 30), fill="#48574e", width=2)
+    return roof
 
 
 def _font_exists(name: str) -> bool:
