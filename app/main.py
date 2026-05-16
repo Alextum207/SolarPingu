@@ -69,6 +69,7 @@ app.add_middleware(
         "http://127.0.0.1:4173",
         "http://localhost:4173",
     ],
+    allow_origin_regex=r"https://.*\.trycloudflare\.com",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
