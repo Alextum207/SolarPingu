@@ -23,6 +23,7 @@ def _mock_customer_call(monkeypatch):
     monkeypatch.setattr(settings, "smtp_host", None)
     monkeypatch.setattr(settings, "smtp_user", None)
     monkeypatch.setattr(settings, "smtp_password", None)
+    monkeypatch.setattr(settings, "google_application_credentials", None)
 
 
 def test_health() -> None:
@@ -911,12 +912,18 @@ def test_panel_plan_image_and_installer_confirm(monkeypatch, tmp_path) -> None:
             f"/installer/confirm/{lead_id}",
             params={"installer_id": "installer_a", "slot": slot.isoformat()},
         )
+        confirm_again = client.get(
+            f"/installer/confirm/{lead_id}",
+            params={"installer_id": "installer_a", "slot": slot.isoformat()},
+        )
         stored = db.get_agentic_lead(lead_id)
 
     assert image.status_code == 200
     assert image.headers["content-type"].startswith("image/png")
     assert confirm.status_code == 200
+    assert confirm_again.status_code == 200
     assert "Handwerker-Termin bestaetigt" in confirm.text
+    assert "kein zweiter Kalendertermin erstellt" in confirm_again.text
     assert stored is not None
     assert stored["status"] == "installer_appointment_confirmed"
     assert (stored.get("voice") or {}).get("installer_appointment", {}).get("confirmed") is True

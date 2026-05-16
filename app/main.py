@@ -759,6 +759,7 @@ async def create_lead_form(
 
 
 async def _create_lead(payload: LeadCreate) -> dict[str, Any]:
+    lead_id = f"SL-{uuid4().hex[:10].upper()}"
     start = payload.preferred_slot.astimezone(settings.tz)
     end = start + timedelta(minutes=calendar.SLOT_MINUTES)
     if not calendar.is_slot_available(start):
@@ -772,8 +773,8 @@ async def _create_lead(payload: LeadCreate) -> dict[str, Any]:
         message=payload.message,
         start=start,
         end=end,
+        idempotency_key=f"booking-lead:{lead_id}:{start.isoformat()}",
     )
-    lead_id = f"SL-{uuid4().hex[:10].upper()}"
     lead_data = {
         "lead_id": lead_id,
         "created_at": db.now_iso(),
@@ -989,6 +990,20 @@ def confirm_installer_slot(
     installer = installers.get_installer(installer_id)
     selected = _selected_installer_slot(slot, calendar_id=installer["calendar_id"])
     end = selected + timedelta(minutes=calendar.SLOT_MINUTES)
+    voice = stored.get("voice") or {}
+    existing_appointment = voice.get("installer_appointment") or {}
+    if existing_appointment.get("confirmed"):
+        return _installer_confirmation_page(
+            lead=lead,
+            lead_id=lead_id,
+            installer_name=str(existing_appointment.get("installer_name") or installer["name"]),
+            selected=datetime.fromisoformat(
+                str(existing_appointment.get("start") or selected.isoformat())
+            ).astimezone(settings.tz),
+            address=lead.address,
+            event_id=str(existing_appointment.get("calendar_event_id") or "already-confirmed"),
+            reused=True,
+        )
     booking = calendar.book_qualification_call(
         name=lead.name,
         email=str(lead.email),
@@ -998,8 +1013,8 @@ def confirm_installer_slot(
         start=selected,
         end=end,
         calendar_id=installer["calendar_id"],
+        idempotency_key=f"installer:{lead_id}:{installer['id']}:{selected.isoformat()}",
     )
-    voice = stored.get("voice") or {}
     voice["installer_appointment"] = {
         "confirmed": True,
         "start": selected.isoformat(),
@@ -1011,6 +1026,32 @@ def confirm_installer_slot(
         "calendar_link": booking.html_link,
     }
     db.update_agentic_artifacts(lead_id, status="installer_appointment_confirmed", voice=voice)
+    return _installer_confirmation_page(
+        lead=lead,
+        lead_id=lead_id,
+        installer_name=installer["name"],
+        selected=selected,
+        address=lead.address,
+        event_id=booking.event_id,
+        reused=booking.reused,
+    )
+
+
+def _installer_confirmation_page(
+    *,
+    lead: SolarLeadIntake,
+    lead_id: str,
+    installer_name: str,
+    selected: datetime,
+    address: str,
+    event_id: str,
+    reused: bool,
+) -> HTMLResponse:
+    status_text = (
+        "Dieser Lead hatte bereits einen bestaetigten Termin; es wurde kein zweiter Kalendertermin erstellt."
+        if reused
+        else "Der Vor-Ort-Planungstermin wurde geblockt."
+    )
     return HTMLResponse(
         f"""<!doctype html>
 <html lang="de">
@@ -1018,11 +1059,12 @@ def confirm_installer_slot(
 <body style="font-family:Arial,sans-serif;background:#f4f7f2;color:#172018;margin:0;padding:32px;">
   <main style="max-width:680px;margin:0 auto;background:white;border:1px solid #dbe6d6;border-radius:8px;padding:24px;">
     <h1 style="margin-top:0;">Handwerker-Termin bestaetigt</h1>
-    <p>Der Vor-Ort-Planungstermin fuer <strong>{lead.name}</strong> wurde geblockt.</p>
-    <p><strong>Handwerker:</strong> {installer["name"]}</p>
+    <p>{status_text}</p>
+    <p><strong>Lead:</strong> {lead.name}</p>
+    <p><strong>Handwerker:</strong> {installer_name}</p>
     <p><strong>Start:</strong> {selected.strftime('%d.%m.%Y %H:%M Uhr')}</p>
-    <p><strong>Adresse:</strong> {lead.address}</p>
-    <p><strong>Kalender-Event:</strong> {booking.event_id}</p>
+    <p><strong>Adresse:</strong> {address}</p>
+    <p><strong>Kalender-Event:</strong> {event_id}</p>
     <p><a href="/demo/{lead_id}">Lead ansehen</a></p>
   </main>
 </body>

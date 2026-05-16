@@ -23,6 +23,7 @@ WORKDAY_END_HOUR = 17
 class CalendarBooking:
     event_id: str
     html_link: str | None = None
+    reused: bool = False
 
 
 def _google_service() -> Any | None:
@@ -64,6 +65,55 @@ def _busy_events(
     )
     bounds = [_event_bounds(event) for event in response.get("items", [])]
     return [item for item in bounds if item is not None]
+
+
+def _existing_booking(
+    service: Any,
+    *,
+    calendar_id: str,
+    start: datetime,
+    end: datetime,
+    summary: str,
+    description: str,
+    idempotency_key: str | None,
+) -> CalendarBooking | None:
+    response = (
+        service.events()
+        .list(
+            calendarId=calendar_id,
+            timeMin=start.isoformat(),
+            timeMax=end.isoformat(),
+            singleEvents=True,
+            orderBy="startTime",
+        )
+        .execute()
+    )
+    for event in response.get("items", []):
+        if event.get("status") == "cancelled":
+            continue
+        private = (event.get("extendedProperties") or {}).get("private") or {}
+        if idempotency_key and private.get("solar_lead_booking_key") == idempotency_key:
+            return CalendarBooking(
+                event_id=event["id"],
+                html_link=event.get("htmlLink"),
+                reused=True,
+            )
+        bounds = _event_bounds(event)
+        if not bounds:
+            continue
+        event_start, event_end = bounds
+        if (
+            event.get("summary") == summary
+            and event_start == start
+            and event_end == end
+            and event.get("description") == description
+        ):
+            return CalendarBooking(
+                event_id=event["id"],
+                html_link=event.get("htmlLink"),
+                reused=True,
+            )
+    return None
 
 
 def _overlaps(start: datetime, end: datetime, busy: list[tuple[datetime, datetime]]) -> bool:
@@ -128,24 +178,46 @@ def book_qualification_call(
     start: datetime,
     end: datetime,
     calendar_id: str | None = None,
+    idempotency_key: str | None = None,
 ) -> CalendarBooking:
     service = _google_service()
     if service is None:
         return CalendarBooking(event_id=f"local-{uuid4().hex}", html_link=None)
 
+    target_calendar_id = calendar_id or settings.google_calendar_id
+    summary = f"Solar Vor-Ort-Planung - {name}"
+    description = (
+        f"Name: {name}\nEmail: {email}\nTelefon: {phone}\n"
+        f"Adresse: {address}\nNotiz: {message}"
+    )
+    existing = _existing_booking(
+        service,
+        calendar_id=target_calendar_id,
+        start=start,
+        end=end,
+        summary=summary,
+        description=description,
+        idempotency_key=idempotency_key,
+    )
+    if existing is not None:
+        return existing
+
     event = {
-        "summary": f"Solar Vor-Ort-Planung - {name}",
-        "description": (
-            f"Name: {name}\nEmail: {email}\nTelefon: {phone}\n"
-            f"Adresse: {address}\nNotiz: {message}"
-        ),
+        "summary": summary,
+        "description": description,
         "start": {"dateTime": start.isoformat(), "timeZone": settings.app_timezone},
         "end": {"dateTime": end.isoformat(), "timeZone": settings.app_timezone},
     }
+    if idempotency_key:
+        event["extendedProperties"] = {
+            "private": {
+                "solar_lead_booking_key": idempotency_key,
+            }
+        }
     created = (
         service.events()
         .insert(
-            calendarId=calendar_id or settings.google_calendar_id,
+            calendarId=target_calendar_id,
             body=event,
         )
         .execute()
