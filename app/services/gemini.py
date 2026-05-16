@@ -117,7 +117,53 @@ async def generate_structured_json(
 ) -> dict[str, Any]:
     if not settings.gemini_api_key and fallback is not None:
         return fallback
-    return await _generate_json(system_prompt, payload, temperature)
+    try:
+        return await _generate_json(system_prompt, payload, temperature)
+    except httpx.HTTPError:
+        if fallback is not None:
+            return fallback
+        raise
+
+
+async def generate_text(
+    *,
+    system_prompt: str,
+    payload: dict[str, Any],
+    temperature: float = 0.35,
+    fallback: str = "",
+) -> str:
+    if not settings.gemini_api_key:
+        return fallback
+
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{settings.gemini_model}:generateContent?key={settings.gemini_api_key}"
+    )
+    body = {
+        "system_instruction": {"parts": [{"text": system_prompt}]},
+        "contents": [
+            {
+                "role": "user",
+                "parts": [{"text": json.dumps(payload, ensure_ascii=False)}],
+            }
+        ],
+        "generationConfig": {
+            "temperature": temperature,
+        },
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(url, json=body)
+            response.raise_for_status()
+    except httpx.HTTPError:
+        return fallback
+    data = response.json()
+    return "".join(
+        part.get("text", "")
+        for part in data.get("candidates", [{}])[0]
+        .get("content", {})
+        .get("parts", [])
+    ).strip() or fallback
 
 
 async def create_call_plan(lead: dict[str, Any]) -> dict[str, Any]:

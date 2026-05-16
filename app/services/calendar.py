@@ -122,28 +122,19 @@ def book_qualification_call(
         return CalendarBooking(event_id=f"local-{uuid4().hex}", html_link=None)
 
     event = {
-        "summary": f"Solar Qualifikation - {name}",
+        "summary": f"Solar Vor-Ort-Planung - {name}",
         "description": (
             f"Name: {name}\nEmail: {email}\nTelefon: {phone}\n"
             f"Adresse: {address}\nNotiz: {message}"
         ),
         "start": {"dateTime": start.isoformat(), "timeZone": settings.app_timezone},
         "end": {"dateTime": end.isoformat(), "timeZone": settings.app_timezone},
-        "attendees": [{"email": email}],
-        "conferenceData": {
-            "createRequest": {
-                "requestId": uuid4().hex,
-                "conferenceSolutionKey": {"type": "hangoutsMeet"},
-            }
-        },
     }
     created = (
         service.events()
         .insert(
             calendarId=settings.google_calendar_id,
             body=event,
-            conferenceDataVersion=1,
-            sendUpdates="all",
         )
         .execute()
     )

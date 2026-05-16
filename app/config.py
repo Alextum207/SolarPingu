@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 
-load_dotenv()
+load_dotenv(override=True, encoding="utf-8-sig")
 
 
 @dataclass
@@ -21,6 +21,16 @@ class Settings:
     vapi_phone_number_id: str | None = os.getenv("VAPI_PHONE_NUMBER_ID") or None
     vapi_call_url: str = os.getenv("VAPI_CALL_URL", "https://api.vapi.ai/call")
     vapi_file_url: str = os.getenv("VAPI_FILE_URL", "https://api.vapi.ai/file")
+    twilio_account_sid: str | None = os.getenv("TWILIO_ACCOUNT_SID") or None
+    twilio_auth_token: str | None = os.getenv("TWILIO_AUTH_TOKEN") or None
+    twilio_from_number: str | None = os.getenv("TWILIO_FROM_NUMBER") or None
+    twilio_call_url: str = os.getenv("TWILIO_CALL_URL", "https://api.twilio.com/2010-04-01")
+    twilio_relay_language: str = os.getenv("TWILIO_RELAY_LANGUAGE", "multi")
+    twilio_relay_tts_provider: str = os.getenv("TWILIO_RELAY_TTS_PROVIDER", "ElevenLabs")
+    twilio_relay_transcription_provider: str = os.getenv(
+        "TWILIO_RELAY_TRANSCRIPTION_PROVIDER",
+        "Deepgram",
+    )
     google_calendar_id: str = os.getenv("GOOGLE_CALENDAR_ID", "primary")
     google_application_credentials: str | None = (
         os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or None
@@ -37,6 +47,10 @@ class Settings:
     smtp_password: str | None = os.getenv("SMTP_PASSWORD") or None
     from_email: str = os.getenv("FROM_EMAIL", "solar-lead-os@example.com")
     staff_notify_email: str = os.getenv("STAFF_NOTIFY_EMAIL", "sales-team@example.com")
+    conversation_summary_email: str = os.getenv(
+        "CONVERSATION_SUMMARY_EMAIL",
+        "alexander.saade07@gmail.com",
+    )
 
     @property
     def tz(self) -> ZoneInfo:
@@ -54,6 +68,14 @@ class Settings:
             self.vapi_api_key
             and self.vapi_assistant_id
             and self.vapi_phone_number_id
+        )
+
+    @property
+    def twilio_configured(self) -> bool:
+        return bool(
+            self.twilio_account_sid
+            and self.twilio_auth_token
+            and self.twilio_from_number
         )
 
 

@@ -2,7 +2,7 @@
 
 Solar Lead OS is a standalone Python/FastAPI decision engine for the lablab.ai Agentic Workflows track.
 
-The MVP is deliberately narrow: rich solar intake, profitability decision, automatic email action, hub handoff, offer draft, and Speechmatics/Gemini voice Q&A.
+The MVP is deliberately narrow: rich solar intake, profitability decision, automatic email action, hub handoff, offer draft, and a Twilio ConversationRelay call with Gemini as the reasoning engine.
 
 ## Features
 
@@ -14,7 +14,8 @@ The MVP is deliberately narrow: rich solar intake, profitability decision, autom
 - Handoff payload at `GET /api/leads/{lead_id}/handoff`
 - Offer payload at `GET /api/leads/{lead_id}/offer`
 - Generated offer PDF at `GET /api/leads/{lead_id}/offer.pdf`
-- Vapi offer demo call at `POST /api/leads/{lead_id}/vapi-offer-call`
+- Twilio customer call via `POST /intake`, TwiML at `/webhooks/twilio/voice/{lead_id}`, and WebSocket bridge at `/ws/twilio/conversation/{lead_id}`
+- Optional Vapi offer demo call at `POST /api/leads/{lead_id}/vapi-offer-call`
 - Voice session at `POST /api/voice/session`
 - Speechmatics callback at `POST /webhooks/speechmatics`
 - Vapi callback at `POST /webhooks/vapi`
@@ -85,6 +86,14 @@ VAPI_API_KEY=
 VAPI_ASSISTANT_ID=
 VAPI_PHONE_NUMBER_ID=
 VAPI_CALL_URL=https://api.vapi.ai/call
+VAPI_FILE_URL=https://api.vapi.ai/file
+TWILIO_ACCOUNT_SID=
+TWILIO_AUTH_TOKEN=
+TWILIO_FROM_NUMBER=
+TWILIO_CALL_URL=https://api.twilio.com/2010-04-01
+TWILIO_RELAY_LANGUAGE=multi
+TWILIO_RELAY_TTS_PROVIDER=ElevenLabs
+TWILIO_RELAY_TRANSCRIPTION_PROVIDER=Deepgram
 GOOGLE_CALENDAR_ID=primary
 GOOGLE_APPLICATION_CREDENTIALS=
 PUBLIC_BASE_URL=https://your-domain.example
@@ -97,16 +106,18 @@ SMTP_USER=
 SMTP_PASSWORD=
 FROM_EMAIL=solar-lead-os@example.com
 STAFF_NOTIFY_EMAIL=sales-team@example.com
+CONVERSATION_SUMMARY_EMAIL=alexander.saade07@gmail.com
 ```
 
 ## Hackathon Demo Flow
 
 1. Open `http://localhost:8000`.
 2. Submit the prefilled Anna Becker form.
-3. Show the decision: `PURSUE`, score, reasons, offer range, email action.
-4. Show the embedded offer PDF and open `/api/leads/{lead_id}/offer.pdf`.
-5. Use the Vapi button to test a phone demo about the offer.
-5. Test voice Q&A:
+3. The visible customer page should say that SolarPingu will call shortly; it should not show the internal offer PDF.
+4. Twilio calls the form phone number and connects the call to `/ws/twilio/conversation/{lead_id}` through ConversationRelay.
+5. Gemini generates the next spoken reply for every caller prompt.
+6. For a local real-call test, `PUBLIC_BASE_URL` must be an HTTPS URL that also supports `wss`, for example an ngrok tunnel to port 8000.
+7. Test voice Q&A without a call:
 
 ```bash
 curl -X POST http://localhost:8000/api/voice/session ^
@@ -124,13 +135,17 @@ The score combines owner status, budget fit, timeline urgency, roof/solar potent
 
 See [docs/handoff_schema.md](docs/handoff_schema.md). The current `solar-lead-hub` can keep calling `POST /agent2/evaluate`; richer demos can read `GET /api/leads/{lead_id}/handoff`.
 
+## Twilio Voice Flow
+
+Twilio places the outbound phone call and uses ConversationRelay for real-time STT/TTS over WebSocket. The local FastAPI WebSocket receives caller prompts, sends the lead, offer, profitability, and recent conversation context to Gemini, then returns text tokens to Twilio for speech playback. For multilingual calls, `TWILIO_RELAY_LANGUAGE=multi` requires Deepgram transcription and ElevenLabs TTS in ConversationRelay.
+
 ## Speechmatics Voice Flow
 
-Speechmatics provides the transcript input. Gemini generates the pitch/Q&A/closing response. Browser speech synthesis or pre-recorded audio can speak the result in the demo; Speechmatics is not used as TTS.
+Speechmatics provides the transcript input with German enhanced transcription, speaker diarization, entity metadata, and a solar-specific custom vocabulary. The callback is normalized into a flat transcript, speaker turns, and low-confidence terms. Gemini generates the pitch/Q&A/closing response, and the backend sends a conversation summary with clear next steps to `CONVERSATION_SUMMARY_EMAIL`. Browser speech synthesis or pre-recorded audio can speak the result in the demo; Speechmatics is not used as TTS.
 
 ## Vapi Note
 
-Vapi remains optional. Free Vapi numbers may not call German numbers, so the winning demo should not depend on live outbound calling.
+Vapi remains optional and is no longer the primary visible demo path. Twilio ConversationRelay is the preferred live-call path; Vapi endpoints are retained for legacy comparisons.
 
 ## Tests
 

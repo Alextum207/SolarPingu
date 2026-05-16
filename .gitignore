@@ -9,3 +9,4 @@ venv/
 data/
 *.db
 API Keys.txt
+secrets/

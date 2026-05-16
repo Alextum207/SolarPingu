@@ -3,18 +3,20 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import asynccontextmanager
-from datetime import timedelta
+from datetime import datetime, timedelta
+from io import BytesIO
 from typing import Annotated, Any, Awaitable, Callable
 from uuid import uuid4
 
 import httpx
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
     JSONResponse,
     RedirectResponse,
+    Response,
     StreamingResponse,
 )
 from fastapi.templating import Jinja2Templates
@@ -39,6 +41,7 @@ from app.services import (
     profitability,
     solar_api,
     speechmatics,
+    twilio_bridge,
     vapi,
     voice_agent,
 )
@@ -97,9 +100,7 @@ def leads_page(request: Request) -> HTMLResponse:
 
 @app.get("/intake")
 def intake_page(request: Request):
-    if request.query_params.get("legacy") == "1":
-        return index(request)
-    return RedirectResponse(settings.frontend_url, status_code=302)
+    return index(request)
 
 
 @app.get("/api/slots", response_model=list[Slot])
@@ -204,9 +205,10 @@ async def intake_form(
             },
             status_code=400,
         )
-    return RedirectResponse(
-        f"{settings.frontend_url}?leadId={result['lead_id']}&autoRun=1",
-        status_code=303,
+    return templates.TemplateResponse(
+        request,
+        "workflow.html",
+        result,
     )
 
 
@@ -415,9 +417,16 @@ async def _run_agentic_workflow(
         offer=offer_draft.model_dump(mode="json"),
         handoff=handoff.model_dump(mode="json"),
     )
+    customer_call = await _start_customer_call(
+        lead=lead,
+        solar=solar,
+        offer_data=offer_draft.model_dump(mode="json"),
+        profitability_data=decision.model_dump(mode="json"),
+    )
+    final_status = customer_call.get("status") or status
     result = {
         "lead_id": lead_id,
-        "status": status,
+        "status": final_status,
         "lead": lead.model_dump(mode="json"),
         "solar_enrichment": solar,
         "profitability": decision.model_dump(mode="json"),
@@ -427,6 +436,8 @@ async def _run_agentic_workflow(
         "offer_pdf_path": str(pdf_path),
         "handoff": handoff.model_dump(mode="json"),
         "email": mail,
+        "speechmatics_configured": bool(settings.speechmatics_api_key),
+        "customer_call": customer_call,
     }
     await _emit_trace(
         trace_callback,
@@ -434,10 +445,59 @@ async def _run_agentic_workflow(
         agent="Agent 1",
         step="Workflow abgeschlossen",
         status="DONE",
-        message=f"Lead-Status: {status}.",
+        message=f"Lead-Status: {final_status}.",
         lead_id=lead_id,
     )
     return result
+
+
+async def _start_customer_call(
+    *,
+    lead: SolarLeadIntake,
+    solar: dict[str, Any],
+    offer_data: dict[str, Any],
+    profitability_data: dict[str, Any],
+) -> dict[str, Any]:
+    lead_id = lead.lead_id or ""
+    try:
+        response = await twilio_bridge.create_customer_call(
+            lead_id=lead_id,
+            customer_number=lead.phone,
+        )
+    except Exception as exc:
+        response = {"failed": True, "error": str(exc)}
+
+    call_id = str(response.get("sid") or response.get("callSid") or response.get("id") or "")
+    call_status = (
+        "twilio_call_failed"
+        if response.get("failed")
+        else "twilio_call_skipped"
+        if response.get("skipped")
+        else "twilio_call_queued"
+    )
+    if call_id:
+        db.add_vapi_event(
+            lead_id=lead_id,
+            call_id=call_id,
+            event_type="twilio_customer_call_started",
+            payload=response,
+        )
+    stored = db.get_agentic_lead(lead_id)
+    preserved_status = str((stored or {}).get("status") or call_status)
+    db.update_agentic_artifacts(
+        lead_id,
+        status=preserved_status,
+        voice={
+            "twilio_customer_call": response,
+            "customer_call_status": call_status,
+            "provider": "twilio",
+        },
+    )
+    return {
+        "status": call_status,
+        "call_id": call_id,
+        "response": response,
+    }
 
 
 @app.post("/agent2/evaluate")
@@ -790,7 +850,7 @@ async def create_recording_job(
     recording_url: Annotated[str | None, Form()] = None,
     audio_file: Annotated[UploadFile | None, File()] = None,
 ) -> RecordingAccepted:
-    if db.get_lead(lead_id) is None:
+    if db.get_lead(lead_id) is None and db.get_agentic_lead(lead_id) is None:
         raise HTTPException(status_code=404, detail="Lead not found.")
     if not recording_url and audio_file is None:
         raise HTTPException(status_code=400, detail="Provide recording_url or audio_file.")
@@ -814,7 +874,9 @@ async def create_recording_job(
 
 @app.post("/webhooks/speechmatics")
 async def speechmatics_callback(payload: dict[str, Any]) -> dict[str, Any]:
-    lead_id, transcript = speechmatics.transcript_from_callback(payload)
+    speechmatics_artifacts = speechmatics.callback_artifacts(payload)
+    lead_id = speechmatics_artifacts["lead_id"]
+    transcript = speechmatics_artifacts["transcript"]
     if not lead_id:
         raise HTTPException(status_code=400, detail="Missing lead_id in Speechmatics callback.")
     agentic = db.get_agentic_lead(lead_id)
@@ -822,6 +884,8 @@ async def speechmatics_callback(payload: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="Lead not found.")
 
     qualification = await gemini.extract_qualification(lead_id, transcript)
+    qualification["conversation_turns"] = speechmatics_artifacts["conversation_turns"]
+    qualification["low_confidence_terms"] = speechmatics_artifacts["low_confidence_terms"]
     if agentic is not None:
         lead = SolarLeadIntake.model_validate(agentic["intake"])
         prof = None
@@ -830,13 +894,28 @@ async def speechmatics_callback(payload: dict[str, Any]) -> dict[str, Any]:
 
             prof = ProfitabilityDecision.model_validate(agentic["profitability"])
         voice = await voice_agent.answer_from_transcript(lead, transcript, prof)
+        summary_mail = email.send_conversation_summary(
+            lead_id=lead_id,
+            lead_name=lead.name,
+            lead_email=str(lead.email),
+            lead_phone=lead.phone,
+            source="Speechmatics",
+            transcript=transcript,
+            conversation_turns=speechmatics_artifacts["conversation_turns"],
+            qualification=qualification,
+            voice_result=voice.model_dump(mode="json"),
+            planning_context=_email_planning_context(agentic),
+        )
         db.update_agentic_artifacts(
             lead_id,
             status=voice.next_status,
             voice={
                 "transcript": transcript,
+                "conversation_turns": speechmatics_artifacts["conversation_turns"],
+                "low_confidence_terms": speechmatics_artifacts["low_confidence_terms"],
                 "qualification": qualification,
                 "voice_result": voice.model_dump(mode="json"),
+                "summary_email": summary_mail,
             },
         )
         return {
@@ -844,10 +923,27 @@ async def speechmatics_callback(payload: dict[str, Any]) -> dict[str, Any]:
             "lead_id": lead_id,
             "qualification": qualification,
             "voice": voice.model_dump(mode="json"),
+            "summary_email": summary_mail,
         }
 
     db.complete_transcription(lead_id, transcript, qualification)
-    return {"ok": True, "lead_id": lead_id, "qualification": qualification}
+    lead_row = db.row_to_dict(db.get_lead(lead_id)) or {}
+    summary_mail = email.send_conversation_summary(
+        lead_id=lead_id,
+        lead_name=str(lead_row.get("name") or lead_id),
+        lead_email=str(lead_row.get("email") or ""),
+        lead_phone=str(lead_row.get("phone") or ""),
+        source="Speechmatics",
+        transcript=transcript,
+        conversation_turns=speechmatics_artifacts["conversation_turns"],
+        qualification=qualification,
+    )
+    return {
+        "ok": True,
+        "lead_id": lead_id,
+        "qualification": qualification,
+        "summary_email": summary_mail,
+    }
 
 
 @app.get("/api/leads/{lead_id}/handoff")
@@ -856,6 +952,150 @@ def get_handoff(lead_id: str) -> dict[str, Any]:
     if stored is None or not stored.get("handoff"):
         raise HTTPException(status_code=404, detail="Handoff not found.")
     return stored["handoff"]
+
+
+def _email_planning_context(stored: dict[str, Any]) -> dict[str, Any]:
+    try:
+        slots = [
+            slot.model_dump(mode="json")
+            for slot in calendar.get_available_slots(max_slots=3)
+        ]
+    except Exception:
+        slots = []
+    return {
+        "lead": stored.get("intake"),
+        "solar": stored.get("solar"),
+        "profitability": stored.get("profitability"),
+        "offer": stored.get("offer"),
+        "handoff": stored.get("handoff"),
+        "available_slots": slots,
+    }
+
+
+@app.get("/installer/confirm/{lead_id}", response_class=HTMLResponse)
+def confirm_installer_slot(lead_id: str, slot: str | None = None) -> HTMLResponse:
+    stored = db.get_agentic_lead(lead_id)
+    if stored is None:
+        raise HTTPException(status_code=404, detail="Lead not found.")
+    lead = SolarLeadIntake.model_validate(stored["intake"])
+    selected = _selected_installer_slot(slot)
+    end = selected + timedelta(minutes=calendar.SLOT_MINUTES)
+    booking = calendar.book_qualification_call(
+        name=lead.name,
+        email=str(lead.email),
+        phone=lead.phone,
+        address=lead.address,
+        message="Finales Vor-Ort-Planungsgespraech mit Handwerker nach Lead-Call.",
+        start=selected,
+        end=end,
+    )
+    voice = stored.get("voice") or {}
+    voice["installer_appointment"] = {
+        "confirmed": True,
+        "start": selected.isoformat(),
+        "end": end.isoformat(),
+        "calendar_event_id": booking.event_id,
+        "calendar_link": booking.html_link,
+    }
+    db.update_agentic_artifacts(lead_id, status="installer_appointment_confirmed", voice=voice)
+    return HTMLResponse(
+        f"""<!doctype html>
+<html lang="de">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Termin bestaetigt</title></head>
+<body style="font-family:Arial,sans-serif;background:#f4f7f2;color:#172018;margin:0;padding:32px;">
+  <main style="max-width:680px;margin:0 auto;background:white;border:1px solid #dbe6d6;border-radius:8px;padding:24px;">
+    <h1 style="margin-top:0;">Handwerker-Termin bestaetigt</h1>
+    <p>Der Vor-Ort-Planungstermin fuer <strong>{lead.name}</strong> wurde geblockt.</p>
+    <p><strong>Start:</strong> {selected.strftime('%d.%m.%Y %H:%M Uhr')}</p>
+    <p><strong>Adresse:</strong> {lead.address}</p>
+    <p><strong>Kalender-Event:</strong> {booking.event_id}</p>
+    <p><a href="/demo/{lead_id}">Lead ansehen</a></p>
+  </main>
+</body>
+</html>"""
+    )
+
+
+def _selected_installer_slot(slot: str | None) -> datetime:
+    if slot:
+        try:
+            return datetime.fromisoformat(slot).astimezone(settings.tz)
+        except ValueError:
+            pass
+    available = calendar.get_available_slots(max_slots=1)
+    if available:
+        return available[0].start
+    return datetime.now(settings.tz) + timedelta(hours=2)
+
+
+@app.get("/api/leads/{lead_id}/panel-plan.png")
+def panel_plan_image(lead_id: str) -> StreamingResponse:
+    stored = db.get_agentic_lead(lead_id)
+    if stored is None:
+        raise HTTPException(status_code=404, detail="Lead not found.")
+    image = _render_panel_plan_png(stored)
+    return StreamingResponse(image, media_type="image/png")
+
+
+def _render_panel_plan_png(stored: dict[str, Any]) -> BytesIO:
+    from PIL import Image, ImageDraw, ImageFont
+
+    lead = stored.get("intake") or {}
+    offer = stored.get("offer") or {}
+    solar = stored.get("solar") or {}
+    potential = solar.get("solar_potential") or {}
+    width, height = 1200, 720
+    image = Image.new("RGB", (width, height), "#f5f7f2")
+    draw = ImageDraw.Draw(image)
+    title_font = ImageFont.truetype("arial.ttf", 46) if _font_exists("arial.ttf") else ImageFont.load_default()
+    body_font = ImageFont.truetype("arial.ttf", 28) if _font_exists("arial.ttf") else ImageFont.load_default()
+    small_font = ImageFont.truetype("arial.ttf", 22) if _font_exists("arial.ttf") else ImageFont.load_default()
+
+    draw.rectangle((0, 0, width, 92), fill="#15351f")
+    draw.text((42, 24), "Grobe Systemplanung Agent 2", fill="white", font=title_font)
+    draw.rounded_rectangle((60, 130, 780, 590), radius=28, fill="#586253", outline="#2f3d31", width=5)
+    for x in range(110, 720, 124):
+        for y in range(170, 520, 108):
+            draw.rounded_rectangle((x, y, x + 92, y + 70), radius=8, fill="#172f4d", outline="#86b8ff", width=3)
+            draw.line((x + 46, y + 4, x + 46, y + 66), fill="#86b8ff", width=2)
+            draw.line((x + 4, y + 35, x + 88, y + 35), fill="#86b8ff", width=2)
+    draw.polygon([(60, 590), (780, 590), (720, 645), (120, 645)], fill="#384039")
+
+    system_size = offer.get("system_size_kwp") or potential.get("estimated_kwp") or "n/a"
+    roof_area = potential.get("roof_area_m2") or "n/a"
+    price = offer.get("price_range") or {}
+    facts = [
+        f"Lead: {lead.get('name', 'unbekannt')}",
+        f"Adresse: {lead.get('address', 'unbekannt')}",
+        f"System: ca. {system_size} kWp",
+        f"Dachflaeche: ca. {roof_area} m2",
+        f"Paket: {offer.get('package_name', 'Smart PV Paket')}",
+        f"Preisrahmen: {price.get('min', 'n/a')} - {price.get('max', 'n/a')} {price.get('currency', 'EUR')}",
+    ]
+    y = 155
+    for fact in facts:
+        draw.text((830, y), fact[:34], fill="#172018", font=body_font)
+        y += 58
+    draw.text(
+        (60, 672),
+        "Hinweis: schematische Vorplanung; finale Belegung wird beim Vor-Ort-Termin geprueft.",
+        fill="#4c5b50",
+        font=small_font,
+    )
+    output = BytesIO()
+    image.save(output, format="PNG")
+    output.seek(0)
+    return output
+
+
+def _font_exists(name: str) -> bool:
+    try:
+        from PIL import ImageFont
+
+        ImageFont.truetype(name, 12)
+        return True
+    except OSError:
+        return False
 
 
 @app.get("/api/leads/{lead_id}/offer")
@@ -965,6 +1205,61 @@ async def vapi_offer_call(
     )
 
 
+@app.api_route("/webhooks/twilio/voice/{lead_id}", methods=["GET", "POST"])
+async def twilio_voice_twiml(lead_id: str) -> Response:
+    stored = db.get_agentic_lead(lead_id)
+    if stored is None:
+        raise HTTPException(status_code=404, detail="Lead not found.")
+    lead = SolarLeadIntake.model_validate(stored["intake"])
+    twiml = twilio_bridge.build_conversation_relay_twiml(lead_id, lead)
+    return Response(content=twiml, media_type="application/xml")
+
+
+@app.post("/webhooks/twilio/status/{lead_id}")
+async def twilio_status_callback(lead_id: str, request: Request) -> dict[str, Any]:
+    form = await request.form()
+    payload = twilio_bridge.status_payload(dict(form))
+    call_sid = payload.get("CallSid") or payload.get("CallSid".lower()) or ""
+    call_status = payload.get("CallStatus") or payload.get("CallStatus".lower()) or "unknown"
+    db.add_vapi_event(
+        lead_id=lead_id,
+        call_id=call_sid,
+        event_type=f"twilio_status_{call_status}",
+        payload=payload,
+    )
+    stored = db.get_agentic_lead(lead_id)
+    if stored is not None:
+        voice = stored.get("voice") or {}
+        voice["twilio_status"] = payload
+        db.update_agentic_artifacts(
+            lead_id,
+            status=f"twilio_call_{call_status}",
+            voice=voice,
+        )
+    return {"ok": True, "lead_id": lead_id, "call_sid": call_sid, "status": call_status}
+
+
+@app.api_route("/webhooks/twilio/relay-ended/{lead_id}", methods=["GET", "POST"])
+async def twilio_relay_ended(lead_id: str, request: Request) -> Response:
+    form = await request.form() if request.method == "POST" else request.query_params
+    payload = twilio_bridge.status_payload(dict(form))
+    db.add_vapi_event(
+        lead_id=lead_id,
+        call_id=payload.get("CallSid") or "",
+        event_type="twilio_relay_ended",
+        payload=payload,
+    )
+    return Response(
+        content='<?xml version="1.0" encoding="UTF-8"?><Response><Hangup /></Response>',
+        media_type="application/xml",
+    )
+
+
+@app.websocket("/ws/twilio/conversation/{lead_id}")
+async def twilio_conversation_ws(websocket: WebSocket, lead_id: str) -> None:
+    await twilio_bridge.handle_conversation_ws(websocket, lead_id)
+
+
 @app.post("/api/voice/session")
 async def voice_session(payload: VoiceSessionCreate) -> dict[str, Any]:
     stored = db.get_agentic_lead(payload.lead_id)
@@ -978,12 +1273,26 @@ async def voice_session(payload: VoiceSessionCreate) -> dict[str, Any]:
         prof = ProfitabilityDecision.model_validate(stored["profitability"])
     transcript = payload.prompt or "Bitte pitchen Sie mir das Solar-Projekt kurz."
     voice = await voice_agent.answer_from_transcript(lead, transcript, prof)
+    voice_payload = voice.model_dump(mode="json")
+    summary_mail = None
+    if voice.intent in {"closed", "ready_to_book"}:
+        summary_mail = email.send_conversation_summary(
+            lead_id=payload.lead_id,
+            lead_name=lead.name,
+            lead_email=str(lead.email),
+            lead_phone=lead.phone,
+            source="Browser Voice Demo",
+            transcript=transcript,
+            voice_result=voice_payload,
+            planning_context=_email_planning_context(stored),
+        )
+        voice_payload["summary_email"] = summary_mail
     db.update_agentic_artifacts(
         payload.lead_id,
         status=voice.next_status,
-        voice={"transcript": transcript, "voice_result": voice.model_dump(mode="json")},
+        voice={"transcript": transcript, "voice_result": voice_payload},
     )
-    return voice.model_dump(mode="json")
+    return voice_payload
 
 
 @app.get("/book/{lead_id}", response_class=HTMLResponse)
@@ -1006,7 +1315,12 @@ def demo_page(request: Request, lead_id: str) -> HTMLResponse:
     return templates.TemplateResponse(
         request,
         "demo.html",
-        {"lead_id": lead_id, "record": stored},
+        {
+            "lead_id": lead_id,
+            "record": stored,
+            "lead": stored.get("intake"),
+            "speechmatics_configured": bool(settings.speechmatics_api_key),
+        },
     )
 
 
@@ -1023,9 +1337,60 @@ async def vapi_callback(payload: dict[str, Any]) -> dict[str, Any]:
         event_type=event_type,
         payload=payload,
     )
+    if lead_id and event_type == "status-update":
+        call_status = vapi.extract_status(payload)
+        if call_status:
+            agentic = db.get_agentic_lead(lead_id)
+            if agentic is not None:
+                voice = agentic.get("voice") or {}
+                voice["vapi_status"] = call_status
+                db.update_agentic_artifacts(
+                    lead_id,
+                    status=f"call_{call_status}",
+                    voice=voice,
+                )
     if lead_id and event_type in {"end-of-call-report", "call-ended", "ended"}:
         db.update_status(lead_id, "call_completed")
+        summary, transcript = vapi.extract_call_text(payload)
+        if summary or transcript:
+            contact = _conversation_summary_contact(lead_id)
+            summary_mail = email.send_conversation_summary(
+                lead_id=lead_id,
+                lead_name=contact["name"],
+                lead_email=contact["email"],
+                lead_phone=contact["phone"],
+                source="Vapi",
+                transcript=transcript,
+                call_summary=summary,
+                planning_context=_email_planning_context(db.get_agentic_lead(lead_id) or {}),
+            )
+            agentic = db.get_agentic_lead(lead_id)
+            if agentic is not None:
+                voice = agentic.get("voice") or {}
+                voice["vapi_summary"] = {
+                    "summary": summary,
+                    "transcript": transcript,
+                    "summary_email": summary_mail,
+                }
+                db.update_agentic_artifacts(lead_id, status="call_completed", voice=voice)
     return {"ok": True, "lead_id": lead_id, "call_id": call_id, "event_type": event_type}
+
+
+def _conversation_summary_contact(lead_id: str) -> dict[str, str]:
+    agentic = db.get_agentic_lead(lead_id)
+    if agentic is not None:
+        lead = SolarLeadIntake.model_validate(agentic["intake"])
+        return {
+            "name": lead.name,
+            "email": str(lead.email),
+            "phone": lead.phone,
+        }
+    lead = db.row_to_dict(db.get_lead(lead_id)) or {}
+    return {
+        "name": str(lead.get("name") or lead_id),
+        "email": str(lead.get("email") or ""),
+        "phone": str(lead.get("phone") or ""),
+    }
 
 
 @app.get("/api/leads/{lead_id}")

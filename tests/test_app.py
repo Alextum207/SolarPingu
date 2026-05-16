@@ -2,13 +2,27 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from app import db
 from app.config import settings
 from app.main import app
 from app.models import Slot
-from app.services import calendar, vapi
+from app.services import calendar, email, speechmatics, twilio_bridge, vapi
+from app.services import gemini
+
+
+@pytest.fixture(autouse=True)
+def _mock_customer_call(monkeypatch):
+    async def fake_customer_call(**kwargs):
+        return {"sid": "customer_call_123", "status": "queued", "mock": True}
+
+    monkeypatch.setattr(twilio_bridge, "create_customer_call", fake_customer_call)
+    monkeypatch.setattr(settings, "smtp_host", None)
+    monkeypatch.setattr(settings, "smtp_user", None)
+    monkeypatch.setattr(settings, "smtp_password", None)
 
 
 def test_health() -> None:
@@ -562,6 +576,178 @@ def test_voice_session_closes_and_notifies(monkeypatch, tmp_path) -> None:
         assert voice.status_code == 200
         assert voice.json()["intent"] == "closed"
         assert voice.json()["staff_notification_required"] is True
+        assert voice.json()["summary_email"]["status"] == "demo_logged"
+
+
+def test_agentic_recording_upload_accepts_speechmatics_hybrid(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path / 'hybrid.db'}")
+    monkeypatch.setattr(settings, "google_solar_api_key", None)
+    monkeypatch.setattr(settings, "gemini_api_key", None)
+    monkeypatch.setattr(settings, "speechmatics_api_key", None)
+    db.init_db()
+
+    with TestClient(app) as client:
+        lead = client.post("/api/intake", json=_pursue_payload()).json()
+        upload = client.post(
+            "/api/recordings",
+            data={"lead_id": lead["lead_id"]},
+            files={"audio_file": ("browser-voice-demo.webm", b"fake audio", "audio/webm")},
+        )
+
+    assert upload.status_code == 200
+    assert upload.json()["lead_id"] == lead["lead_id"]
+    assert upload.json()["speechmatics_job_id"].startswith("mock-")
+
+
+def test_workflow_page_starts_customer_call_without_pdf_or_voice_demo(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path / 'workflow_page.db'}")
+    monkeypatch.setattr(settings, "google_solar_api_key", None)
+    monkeypatch.setattr(settings, "gemini_api_key", None)
+    monkeypatch.setattr(settings, "speechmatics_api_key", None)
+    db.init_db()
+
+    with TestClient(app) as client:
+        payload = _pursue_payload()
+        payload["email_address"] = payload.pop("email")
+        response = client.post("/intake", data=payload)
+
+    assert response.status_code == 200
+    assert "Wir rufen Sie gleich" in response.text
+    assert "customer_call_123" in response.text
+    assert "Angebots-PDF" not in response.text
+    assert "Voice Demo starten" not in response.text
+    assert "Vapi Demo-Call starten" not in response.text
+
+
+def test_twilio_twiml_connects_conversation_relay(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path / 'twiml.db'}")
+    monkeypatch.setattr(settings, "public_base_url", "https://agent1.example.com")
+    db.init_db()
+
+    with TestClient(app) as client:
+        lead = client.post("/api/intake", json=_pursue_payload()).json()
+        response = client.post(f"/webhooks/twilio/voice/{lead['lead_id']}")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/xml")
+    assert "<ConversationRelay" in response.text
+    assert 'url="wss://agent1.example.com/ws/twilio/conversation/' in response.text
+    assert 'code="multi"' in response.text
+    assert "Vapi" not in response.text
+
+
+def test_twilio_conversation_relay_websocket_uses_gemini(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path / 'twilio_ws.db'}")
+    db.init_db()
+    calls = []
+
+    async def fake_generate_text(**kwargs):
+        calls.append(kwargs)
+        return "Ja, gerne. Sind Sie Eigentuemer der Immobilie?"
+
+    monkeypatch.setattr("app.services.twilio_bridge.gemini.generate_text", fake_generate_text)
+
+    with TestClient(app) as client:
+        lead = client.post("/api/intake", json=_pursue_payload()).json()
+        lead_id = lead["lead_id"]
+        with client.websocket_connect(f"/ws/twilio/conversation/{lead_id}") as websocket:
+            websocket.send_json(
+                {
+                    "type": "setup",
+                    "sessionId": "VX123",
+                    "callSid": "CA123",
+                    "customParameters": {"lead_id": lead_id},
+                }
+            )
+            websocket.send_json(
+                {
+                    "type": "prompt",
+                    "voicePrompt": "Ich interessiere mich fuer Solar.",
+                    "lang": "de-DE",
+                    "last": True,
+                }
+            )
+            response = websocket.receive_json()
+
+    assert response["type"] == "text"
+    assert response["token"].startswith("Ja, gerne")
+    assert "lang" not in response
+    assert calls[0]["payload"]["detected_language"] == "de-DE"
+
+
+def test_gemini_text_returns_fallback_on_rate_limit(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "gemini_api_key", "test-key")
+
+    class RateLimitedResponse:
+        def raise_for_status(self) -> None:
+            request = httpx.Request("POST", "https://example.test")
+            response = httpx.Response(429, request=request)
+            raise httpx.HTTPStatusError("rate limited", request=request, response=response)
+
+    class RateLimitedClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, *args, **kwargs):
+            return RateLimitedResponse()
+
+    monkeypatch.setattr("app.services.gemini.httpx.AsyncClient", RateLimitedClient)
+
+    import asyncio
+
+    response = asyncio.run(
+        gemini.generate_text(
+            system_prompt="Reply briefly.",
+            payload={"prompt": "Hallo"},
+            fallback="Fallback bleibt im Call.",
+        )
+    )
+
+    assert response == "Fallback bleibt im Call."
+
+
+def test_gemini_structured_json_returns_fallback_on_rate_limit(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "gemini_api_key", "test-key")
+    fallback = {"ok": True, "source": "fallback"}
+
+    class RateLimitedResponse:
+        def raise_for_status(self) -> None:
+            request = httpx.Request("POST", "https://example.test")
+            response = httpx.Response(429, request=request)
+            raise httpx.HTTPStatusError("rate limited", request=request, response=response)
+
+    class RateLimitedClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, *args, **kwargs):
+            return RateLimitedResponse()
+
+    monkeypatch.setattr("app.services.gemini.httpx.AsyncClient", RateLimitedClient)
+
+    import asyncio
+
+    response = asyncio.run(
+        gemini.generate_structured_json(
+            system_prompt="Return JSON.",
+            payload={"prompt": "Hallo"},
+            fallback=fallback,
+        )
+    )
+
+    assert response == fallback
 
 
 def test_vapi_offer_call_button(monkeypatch, tmp_path) -> None:
@@ -620,3 +806,139 @@ def test_vapi_offer_context_markdown_contains_call_file_payload() -> None:
     assert "Smart PV Paket" in markdown
     assert "http://testserver/api/leads/L-CONTEXT/offer.pdf" in markdown
     assert "Voice Agent Instructions" in markdown
+    assert "Anna Becker" in markdown
+    assert "do not interrupt" in markdown
+
+
+def test_conversation_summary_includes_agent2_plan(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path / 'email_plan.db'}")
+    monkeypatch.setattr(settings, "smtp_host", None)
+    db.init_db()
+
+    result = email.send_conversation_summary(
+        lead_id="L-PLAN",
+        lead_name="Anna Becker",
+        lead_email="anna@example.com",
+        lead_phone="+491700000000",
+        source="Test",
+        call_summary="Kunde will Sorgen klaeren und dann Vor-Ort-Termin.",
+        qualification={
+            "need": "Stromkosten senken",
+            "main_concern": "Speicher lohnt sich eventuell nicht",
+            "call_outcome": "ready_to_book",
+        },
+        planning_context={
+            "profitability": {"decision": "PURSUE", "score": 82, "resource_level": "high_touch"},
+            "offer": {
+                "package_name": "Smart PV Paket",
+                "price_range": {"min": 18000, "max": 24000, "currency": "EUR"},
+                "next_steps": ["Vor-Ort-Termin"],
+            },
+            "available_slots": [{"label": "Mo, 18.05. 10:00 Uhr"}],
+            "handoff": {"demo_url": "https://example.test/demo/L-PLAN"},
+        },
+    )
+
+    assert result["status"] == "demo_logged"
+    assert "Lead information" in result["body"]
+    assert "Bild von den moeglichen Solar Panels von Agent 2" in result["body"]
+    assert "/api/leads/L-PLAN/panel-plan.png" in result["body"]
+    assert "/installer/confirm/L-PLAN" in result["body"]
+    assert "Agent-2-Plan fuer Vor-Ort-Termin" in result["body"]
+    assert "Smart PV Paket" in result["body"]
+    assert "Mo, 18.05. 10:00 Uhr" in result["body"]
+    assert "finales Vor-Ort-Planungsgespraech" in result["body"]
+    assert result["html_body"] is not None
+    assert "Besprochenen Handwerker-Termin bestaetigen" in result["html_body"]
+    assert "Gespraechszusammenfassung" in result["html_body"]
+
+
+def test_panel_plan_image_and_installer_confirm(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path / 'installer.db'}")
+    db.init_db()
+
+    with TestClient(app) as client:
+        lead = client.post("/api/intake", json=_pursue_payload()).json()
+        lead_id = lead["lead_id"]
+        client.post(f"/api/workflows/{lead_id}/run")
+        image = client.get(f"/api/leads/{lead_id}/panel-plan.png")
+        confirm = client.get(f"/installer/confirm/{lead_id}")
+        stored = db.get_agentic_lead(lead_id)
+
+    assert image.status_code == 200
+    assert image.headers["content-type"].startswith("image/png")
+    assert confirm.status_code == 200
+    assert "Handwerker-Termin bestaetigt" in confirm.text
+    assert stored is not None
+    assert stored["status"] == "installer_appointment_confirmed"
+    assert (stored.get("voice") or {}).get("installer_appointment", {}).get("confirmed") is True
+
+
+def test_speechmatics_callback_artifacts_group_speaker_turns() -> None:
+    artifacts = speechmatics.callback_artifacts(
+        {
+            "job": {"tracking": {"lead_id": "L-SPEECH"}},
+            "results": [
+                {
+                    "type": "word",
+                    "start_time": 0.1,
+                    "end_time": 0.4,
+                    "alternatives": [
+                        {"content": "Hallo", "speaker": "S1", "confidence": 0.98}
+                    ],
+                },
+                {
+                    "type": "word",
+                    "start_time": 0.5,
+                    "end_time": 0.8,
+                    "alternatives": [
+                        {"content": "Anna", "speaker": "S1", "confidence": 0.95}
+                    ],
+                },
+                {
+                    "type": "punctuation",
+                    "start_time": 0.8,
+                    "end_time": 0.8,
+                    "alternatives": [
+                        {"content": ".", "speaker": "S1", "confidence": 1.0}
+                    ],
+                },
+                {
+                    "type": "word",
+                    "start_time": 1.2,
+                    "end_time": 1.6,
+                    "alternatives": [
+                        {"content": "Ja", "speaker": "S2", "confidence": 0.7}
+                    ],
+                },
+            ],
+        }
+    )
+
+    assert artifacts["lead_id"] == "L-SPEECH"
+    assert artifacts["transcript"] == "Hallo Anna. Ja"
+    assert artifacts["conversation_turns"][0]["speaker"] == "S1"
+    assert artifacts["conversation_turns"][0]["text"] == "Hallo Anna."
+    assert artifacts["conversation_turns"][1]["speaker"] == "S2"
+    assert artifacts["low_confidence_terms"][0]["content"] == "Ja"
+
+
+def test_vapi_extract_call_text_supports_end_report_payload() -> None:
+    summary, transcript = vapi.extract_call_text(
+        {
+            "message": {
+                "type": "end-of-call-report",
+                "analysis": {"summary": "Kunde moechte einen Termin."},
+                "artifact": {
+                    "messages": [
+                        {"role": "assistant", "message": "Hallo Anna"},
+                        {"role": "user", "message": "Ich moechte buchen"},
+                    ]
+                },
+            }
+        }
+    )
+
+    assert summary == "Kunde moechte einen Termin."
+    assert "assistant: Hallo Anna" in transcript
+    assert "user: Ich moechte buchen" in transcript

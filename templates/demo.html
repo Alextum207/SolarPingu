@@ -3,24 +3,35 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Solar Lead Hub Payload</title>
+  <title>Solar Lead Debug</title>
   <style>
     :root { font-family: Inter, Arial, sans-serif; background: #f5f7f2; color: #142018; }
     body { margin: 0; padding: 24px; }
-    main { width: min(1000px, 100%); margin: 0 auto; }
-    h1 { letter-spacing: 0; }
-    pre { white-space: pre-wrap; overflow-x: auto; background: #fff; border: 1px solid #dce7d8; border-radius: 8px; padding: 18px; }
+    main { width: min(1000px, 100%); margin: 0 auto; display: grid; gap: 18px; }
+    h1 { letter-spacing: 0; margin-bottom: 0; }
+    section, .band { background: #fff; border: 1px solid #dce7d8; border-radius: 8px; padding: 20px; box-shadow: 0 14px 40px rgba(20, 50, 25, .06); }
+    a { color: #1d6f42; font-weight: 900; }
+    pre { white-space: pre-wrap; overflow-x: auto; background: #fbfcfa; border: 1px solid #dce7d8; border-radius: 8px; padding: 18px; }
+    .links { display: flex; flex-wrap: wrap; gap: 14px; }
   </style>
 </head>
 <body>
   <main>
-    <h1>Demo Payload für {{ lead_id }}</h1>
-    {% if record.offer %}
-      <p><a href="/api/leads/{{ lead_id }}/offer.pdf">Angebots-PDF öffnen</a></p>
-      <iframe src="/api/leads/{{ lead_id }}/offer.pdf" style="width:100%;min-height:720px;border:1px solid #dce7d8;border-radius:8px;background:#fff"></iframe>
-    {% else %}
+    <div class="band">
+      <h1>Interne Demo / Debug fuer {{ lead_id }}</h1>
+      <p>Diese Seite ist nicht Teil der Kundenerfahrung.</p>
+      <div class="links">
+        <a href="/">Neuen Lead erfassen</a>
+        {% if record.offer %}
+          <a href="/api/leads/{{ lead_id }}/offer.pdf">Internes Angebots-PDF oeffnen</a>
+          <a href="/api/leads/{{ lead_id }}">Lead JSON ansehen</a>
+        {% endif %}
+      </div>
+    </div>
+    <section>
+      <h2>Gespeicherter Lead</h2>
       <pre>{{ record | tojson(indent=2) }}</pre>
-    {% endif %}
+    </section>
   </main>
 </body>
 </html>
