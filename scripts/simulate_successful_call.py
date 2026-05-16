@@ -124,6 +124,10 @@ def simulate_successful_call(lead_id: str) -> dict[str, Any]:
         call_summary=summary,
         planning_context=_planning_context(stored),
     )
+    customer_followup = email.send_customer_booking_followup(
+        lead,
+        summary=summary,
+    )
 
     voice = stored.get("voice") or {}
     voice["twilio_conversation"] = {
@@ -134,6 +138,7 @@ def simulate_successful_call(lead_id: str) -> dict[str, Any]:
         "qualification": qualification,
         "summary": summary,
         "summary_email": summary_mail,
+        "customer_booking_followup": customer_followup,
         "simulated": True,
     }
     voice["customer_call_status"] = "twilio_call_completed"
@@ -150,6 +155,7 @@ def simulate_successful_call(lead_id: str) -> dict[str, Any]:
         "lead_id": lead_id,
         "status": "twilio_call_completed",
         "summary_email_status": summary_mail.get("status"),
+        "customer_followup_status": customer_followup.get("status"),
         "turn_count": len(turns),
     }
 

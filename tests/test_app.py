@@ -962,6 +962,63 @@ def test_panel_plan_image_and_installer_confirm(monkeypatch, tmp_path) -> None:
     )
 
 
+def test_customer_booking_request_waits_for_installer_confirmation(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path / 'customer_booking.db'}")
+    monkeypatch.setattr(settings, "google_application_credentials", None)
+    monkeypatch.setattr(settings, "smtp_host", None)
+    monkeypatch.setattr(settings, "public_base_url", "https://agent1.example.com")
+    monkeypatch.setattr(
+        settings,
+        "installers_json",
+        '[{"id":"installer_a","name":"Installer A","calendar_id":"calendar-a@example.com","region":"Berlin"}]',
+    )
+    db.init_db()
+
+    with TestClient(app) as client:
+        lead = client.post("/api/intake", json=_pursue_payload()).json()
+        lead_id = lead["lead_id"]
+        client.post(f"/api/workflows/{lead_id}/run")
+        book = client.get(f"/book/{lead_id}", params={"mode": "in_person"})
+        slot = (datetime.now(settings.tz) + timedelta(days=3)).replace(
+            hour=13,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+        request_booking = client.post(
+            f"/book/{lead_id}",
+            data={
+                "mode": "in_person",
+                "installer_id": "installer_a",
+                "slot": slot.isoformat(),
+            },
+        )
+        requested = db.get_agentic_lead(lead_id)
+        confirm = client.get(
+            f"/installer/confirm/{lead_id}",
+            params={"installer_id": "installer_a", "slot": slot.isoformat(), "mode": "in_person"},
+        )
+        confirmed = db.get_agentic_lead(lead_id)
+
+    assert book.status_code == 200
+    assert "Vor-Ort-Termin" in book.text
+    assert request_booking.status_code == 200
+    assert "Terminwunsch ist eingegangen" in request_booking.text
+    assert requested is not None
+    assert requested["status"] == "customer_slot_requested"
+    request_payload = (requested.get("voice") or {}).get("customer_booking_request") or {}
+    assert request_payload["status"] == "pending_installer_confirmation"
+    assert request_payload["installer_email_status"] == "demo_logged"
+    assert confirm.status_code == 200
+    assert confirmed is not None
+    voice = confirmed.get("voice") or {}
+    assert voice.get("installer_appointment", {}).get("confirmed") is True
+    assert voice.get("customer_appointment_confirmation", {}).get("status") == "demo_logged"
+
+
 def test_twilio_recording_callback_sends_downloadable_audio(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path / 'recording.db'}")
     monkeypatch.setattr(settings, "public_base_url", "https://agent1.example.com")

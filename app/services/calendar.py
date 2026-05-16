@@ -182,13 +182,14 @@ def book_qualification_call(
     idempotency_key: str | None = None,
     replace_event_id: str | None = None,
     replace_calendar_id: str | None = None,
+    appointment_kind: str = "Vor-Ort-Planung",
 ) -> CalendarBooking:
     service = _google_service()
     if service is None:
         return CalendarBooking(event_id=replace_event_id or f"local-{uuid4().hex}", html_link=None)
 
     target_calendar_id = calendar_id or settings.google_calendar_id
-    summary = f"Solar Vor-Ort-Planung - {name}"
+    summary = f"Solar {appointment_kind} - {name}"
     description = (
         f"Name: {name}\nEmail: {email}\nTelefon: {phone}\n"
         f"Adresse: {address}\nNotiz: {message}"

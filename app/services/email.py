@@ -16,6 +16,10 @@ def booking_link(lead_id: str) -> str:
     return f"{base}/{lead_id}"
 
 
+def _booking_link_with_mode(lead_id: str, mode: str) -> str:
+    return f"{booking_link(lead_id)}?mode={quote(mode)}"
+
+
 def _send_email(
     recipient: str,
     subject: str,
@@ -105,6 +109,27 @@ def send_decision_email(
     profitability: ProfitabilityDecision,
 ) -> dict:
     if profitability.decision == "PURSUE":
+        link = booking_link(lead.lead_id or "")
+        subject = "Ihre Solar-Anfrage ist eingegangen"
+        body = (
+            f"Hallo {lead.name},\n\n"
+            "vielen Dank, Ihre Daten sind bei uns eingegangen. Wir pruefen Ihre Angaben "
+            "und moechten im naechsten Schritt kurz mit Ihnen klaeren, was fuer Sie am besten passt.\n\n"
+            f"Hier koennen Sie einen freien Termin auswaehlen: {link}\n\n"
+            "Sie koennen zwischen einem Online-Termin und einem Vor-Ort-Termin mit einer echten Person waehlen.\n\n"
+            "Viele Gruesse\nSolar Lead OS"
+        )
+        html_body = _customer_booking_html(
+            headline="Ihre Daten sind eingegangen",
+            intro=(
+                "Vielen Dank fuer Ihre Angaben. Waehlen Sie jetzt einfach einen passenden "
+                "freien Termin aus."
+            ),
+            lead=lead,
+            primary_url=link,
+        )
+        return _send_email(str(lead.email), subject, body, lead.lead_id, html_body)
+    if profitability.decision == "PURSUE":
         subject = "Ihr Solar-Projekt sieht wirtschaftlich interessant aus"
         body = (
             f"Hallo {lead.name},\n\n"
@@ -132,6 +157,154 @@ def send_decision_email(
             "Viele Grüße\nSolar Lead OS"
         )
     return _send_email(str(lead.email), subject, body, lead.lead_id)
+
+
+def send_customer_booking_followup(
+    lead: SolarLeadIntake,
+    *,
+    summary: str | None = None,
+) -> dict:
+    link = booking_link(lead.lead_id or "")
+    subject = "Naechster Schritt: Ihren Solar-Termin buchen"
+    body = (
+        f"Hallo {lead.name},\n\n"
+        "danke fuer das Gespraech. Wir moechten mit Ihnen weiterarbeiten und als "
+        "naechsten Schritt einen Termin mit einer echten Person vereinbaren.\n\n"
+        f"Hier koennen Sie einen freien Termin auswaehlen: {link}\n\n"
+        "Sie koennen online starten oder direkt einen Vor-Ort-Termin fuer die konkrete Planung buchen.\n\n"
+    )
+    if summary:
+        body += f"Kurze Zusammenfassung: {summary}\n\n"
+    body += "Viele Gruesse\nSolar Lead OS"
+    html_body = _customer_booking_html(
+        headline="Wir moechten mit Ihnen weiterarbeiten",
+        intro=(
+            "Danke fuer das Gespraech. Buchen Sie jetzt einen passenden Termin: online "
+            "oder als Vor-Ort-Planung mit einer echten Person."
+        ),
+        lead=lead,
+        primary_url=link,
+        summary=summary,
+    )
+    return _send_email(str(lead.email), subject, body, lead.lead_id, html_body)
+
+
+def send_installer_booking_request(
+    *,
+    lead: SolarLeadIntake,
+    installer: dict[str, Any],
+    selected_start: Any,
+    selected_end: Any,
+    mode: str,
+    confirm_url: str,
+    dashboard_url: str,
+) -> dict:
+    recipient = str(installer.get("email") or installer.get("calendar_id") or settings.staff_notify_email)
+    mode_label = "Online-Termin" if mode == "online" else "Vor-Ort-Termin"
+    subject = f"Bitte Termin final bestaetigen: {lead.name}"
+    body = "\n".join(
+        [
+            f"Hallo {installer.get('name') or 'Team'},",
+            "",
+            f"der Kunde hat einen {mode_label} angefragt.",
+            "",
+            f"Kunde: {lead.name}",
+            f"Telefon: {lead.phone}",
+            f"Email: {lead.email}",
+            f"Adresse: {lead.address}",
+            f"Terminwunsch: {selected_start.strftime('%d.%m.%Y %H:%M Uhr')}",
+            "",
+            f"Dashboard mit allen Lead-Infos: {dashboard_url}",
+            f"Final bestaetigen: {confirm_url}",
+            "",
+            "Bitte bestaetige den Termin final. Danach schicken wir dem Kunden automatisch die Bestaetigung.",
+        ]
+    )
+    esc = html_lib.escape
+    html_body = f"""<!doctype html>
+<html>
+  <body style="margin:0;background:#f4f7f2;font-family:Arial,sans-serif;color:#172018;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f4f7f2;padding:24px 0;">
+      <tr><td align="center">
+        <table role="presentation" width="680" cellspacing="0" cellpadding="0" style="width:680px;max-width:94%;background:#ffffff;border:1px solid #dbe6d6;border-radius:8px;overflow:hidden;">
+          <tr><td style="padding:24px 28px;background:#15351f;color:#ffffff;">
+            <h1 style="margin:0;font-size:24px;line-height:1.25;">Termin final bestaetigen</h1>
+          </td></tr>
+          <tr><td style="padding:24px 28px;">
+            <p style="line-height:1.55;margin:0 0 16px;">Der Kunde hat einen <strong>{esc(mode_label)}</strong> angefragt.</p>
+            <ul style="line-height:1.65;margin:0 0 20px;padding-left:20px;">
+              <li>Kunde: {esc(lead.name)}</li>
+              <li>Telefon: {esc(lead.phone)}</li>
+              <li>Email: {esc(str(lead.email))}</li>
+              <li>Adresse: {esc(lead.address)}</li>
+              <li>Terminwunsch: {esc(selected_start.strftime('%d.%m.%Y %H:%M Uhr'))}</li>
+            </ul>
+            <p style="margin:0 0 12px;">
+              <a href="{esc(confirm_url)}" style="display:inline-block;background:#1d6f42;color:#ffffff;text-decoration:none;font-weight:bold;padding:14px 18px;border-radius:6px;">Termin final bestaetigen</a>
+            </p>
+            <p style="margin:0;">
+              <a href="{esc(dashboard_url)}" style="display:inline-block;border:1px solid #dbe6d6;color:#15351f;text-decoration:none;font-weight:bold;padding:13px 16px;border-radius:6px;">Lead im Dashboard ansehen</a>
+            </p>
+          </td></tr>
+        </table>
+      </td></tr>
+    </table>
+  </body>
+</html>"""
+    return _send_email(recipient, subject, body, lead.lead_id, html_body)
+
+
+def send_customer_appointment_confirmed(
+    *,
+    lead: SolarLeadIntake,
+    selected_start: Any,
+    selected_end: Any,
+    mode: str,
+    installer_name: str,
+) -> dict:
+    mode_label = "Online-Termin" if mode == "online" else "Vor-Ort-Termin"
+    subject = "Ihr Solar-Termin ist bestaetigt"
+    body = "\n".join(
+        [
+            f"Hallo {lead.name},",
+            "",
+            "Ihr Termin wurde final bestaetigt.",
+            "",
+            f"Art: {mode_label}",
+            f"Termin: {selected_start.strftime('%d.%m.%Y %H:%M Uhr')}",
+            f"Ansprechpartner: {installer_name}",
+            "",
+            "Wir freuen uns auf das Gespraech.",
+            "",
+            "Viele Gruesse",
+            "Solar Lead OS",
+        ]
+    )
+    esc = html_lib.escape
+    html_body = f"""<!doctype html>
+<html>
+  <body style="margin:0;background:#f4f7f2;font-family:Arial,sans-serif;color:#172018;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f4f7f2;padding:24px 0;">
+      <tr><td align="center">
+        <table role="presentation" width="620" cellspacing="0" cellpadding="0" style="width:620px;max-width:94%;background:#ffffff;border:1px solid #dbe6d6;border-radius:8px;overflow:hidden;">
+          <tr><td style="padding:24px 28px;background:#15351f;color:#ffffff;">
+            <h1 style="margin:0;font-size:24px;line-height:1.25;">Termin bestaetigt</h1>
+          </td></tr>
+          <tr><td style="padding:24px 28px;">
+            <p style="line-height:1.55;margin:0 0 18px;">Hallo {esc(lead.name)}, Ihr Termin wurde final bestaetigt.</p>
+            <ul style="line-height:1.65;margin:0 0 20px;padding-left:20px;">
+              <li>Art: {esc(mode_label)}</li>
+              <li>Termin: {esc(selected_start.strftime('%d.%m.%Y %H:%M Uhr'))}</li>
+              <li>Ansprechpartner: {esc(installer_name)}</li>
+            </ul>
+            <p style="line-height:1.55;margin:0;">Wir freuen uns auf das Gespraech.</p>
+          </td></tr>
+        </table>
+      </td></tr>
+    </table>
+  </body>
+</html>"""
+    return _send_email(str(lead.email), subject, body, lead.lead_id, html_body)
 
 
 def notify_staff(lead_id: str, message: str) -> dict:
@@ -369,6 +542,58 @@ def _confirm_url(lead_id: str, planning_context: dict[str, Any]) -> str:
             slot_value = str(first_slot)
     query = f"?slot={quote(slot_value)}" if slot_value else ""
     return f"{settings.public_base_url}/installer/confirm/{lead_id}{query}"
+
+
+def _customer_booking_html(
+    *,
+    headline: str,
+    intro: str,
+    lead: SolarLeadIntake,
+    primary_url: str,
+    summary: str | None = None,
+) -> str:
+    esc = html_lib.escape
+    online_url = _booking_link_with_mode(lead.lead_id or "", "online")
+    in_person_url = _booking_link_with_mode(lead.lead_id or "", "in_person")
+    summary_html = (
+        f'<p style="line-height:1.55;margin:0 0 18px;color:#405144;">{esc(summary)}</p>'
+        if summary
+        else ""
+    )
+    return f"""<!doctype html>
+<html>
+  <body style="margin:0;background:#f4f7f2;font-family:Arial,sans-serif;color:#172018;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f4f7f2;padding:24px 0;">
+      <tr><td align="center">
+        <table role="presentation" width="640" cellspacing="0" cellpadding="0" style="width:640px;max-width:94%;background:#ffffff;border:1px solid #dbe6d6;border-radius:8px;overflow:hidden;">
+          <tr><td style="padding:24px 28px;background:#15351f;color:#ffffff;">
+            <h1 style="margin:0;font-size:24px;line-height:1.25;">{esc(headline)}</h1>
+          </td></tr>
+          <tr><td style="padding:24px 28px;">
+            <p style="line-height:1.55;margin:0 0 18px;">Hallo {esc(lead.name)},</p>
+            <p style="line-height:1.55;margin:0 0 18px;">{esc(intro)}</p>
+            {summary_html}
+            <p style="margin:0 0 20px;">
+              <a href="{esc(primary_url)}" style="display:inline-block;background:#1d6f42;color:#ffffff;text-decoration:none;font-weight:bold;padding:14px 18px;border-radius:6px;">
+                Freie Termine ansehen
+              </a>
+            </p>
+            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-top:8px;">
+              <tr>
+                <td style="padding:8px 6px 8px 0;">
+                  <a href="{esc(online_url)}" style="display:block;border:1px solid #dbe6d6;color:#15351f;text-decoration:none;font-weight:bold;padding:13px;border-radius:6px;">Online-Termin buchen</a>
+                </td>
+                <td style="padding:8px 0 8px 6px;">
+                  <a href="{esc(in_person_url)}" style="display:block;border:1px solid #dbe6d6;color:#15351f;text-decoration:none;font-weight:bold;padding:13px;border-radius:6px;">Vor-Ort-Termin buchen</a>
+                </td>
+              </tr>
+            </table>
+          </td></tr>
+        </table>
+      </td></tr>
+    </table>
+  </body>
+</html>"""
 
 
 def _appointment_option_lines(

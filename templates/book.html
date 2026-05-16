@@ -3,20 +3,79 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Termin buchen</title>
+  <title>Solar-Termin buchen</title>
   <style>
-    :root { font-family: Inter, Arial, sans-serif; background: #f5f7f2; color: #142018; }
-    body { min-height: 100vh; margin: 0; display: grid; place-items: center; padding: 24px; }
-    main { width: min(680px, 100%); background: #fff; border: 1px solid #dce7d8; border-radius: 8px; padding: 24px; box-shadow: 0 14px 40px rgba(20, 50, 25, .08); }
-    h1 { margin-top: 0; letter-spacing: 0; }
-    a { color: #1d6f42; font-weight: 900; }
+    :root { font-family: Inter, Arial, sans-serif; background: #f4f7f2; color: #172018; }
+    body { margin: 0; min-height: 100vh; padding: 24px; }
+    main { width: min(860px, 100%); margin: 0 auto; background: #fff; border: 1px solid #dbe6d6; border-radius: 8px; box-shadow: 0 14px 40px rgba(20, 50, 25, .08); overflow: hidden; }
+    header { background: #15351f; color: #fff; padding: 24px 28px; }
+    section { padding: 24px 28px; }
+    h1 { margin: 0; font-size: clamp(28px, 6vw, 42px); letter-spacing: 0; }
+    p { color: #526154; line-height: 1.55; }
+    .tabs { display: flex; gap: 10px; flex-wrap: wrap; margin: 20px 0; }
+    .tab { border: 1px solid #dbe6d6; border-radius: 6px; color: #15351f; font-weight: 900; padding: 12px 14px; text-decoration: none; }
+    .tab.active { background: #1d6f42; border-color: #1d6f42; color: #fff; }
+    .installer { border: 1px solid #dbe6d6; border-radius: 8px; padding: 16px; margin: 14px 0; }
+    .installer h2 { margin: 0 0 4px; font-size: 18px; }
+    .slots { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); margin-top: 14px; }
+    button { width: 100%; border: 0; border-radius: 6px; background: #1d6f42; color: #fff; cursor: pointer; font: inherit; font-weight: 900; padding: 13px 14px; }
+    .muted { color: #6b746d; font-size: 14px; }
+    .empty { border: 1px dashed #dbe6d6; border-radius: 8px; padding: 18px; color: #6b746d; }
   </style>
 </head>
 <body>
   <main>
-    <h1>Termin für {{ lead.name }} buchen</h1>
-    <p>Demo-Link für Lead {{ lead_id }}. In Production wird hier Google Calendar oder Calendly eingebunden.</p>
-    <p><a href="/demo/{{ lead_id }}">Zur Demo und zum Angebotsentwurf</a></p>
+    <header>
+      <h1>Termin fuer {{ lead.name }} buchen</h1>
+    </header>
+    <section>
+      <p>Ihre Daten sind eingegangen. Waehlen Sie jetzt einen freien Termin. Der Termin wird erst final, wenn unser Team ihn bestaetigt hat.</p>
+      <div class="tabs">
+        <a class="tab {% if mode == 'online' %}active{% endif %}" href="/book/{{ lead_id }}?mode=online">Online-Termin</a>
+        <a class="tab {% if mode != 'online' %}active{% endif %}" href="/book/{{ lead_id }}?mode=in_person">Vor-Ort-Termin</a>
+      </div>
+
+      {% if mode == 'online' %}
+        <div class="installer">
+          <h2>Online mit einer echten Person</h2>
+          <div class="muted">Kurzer Beratungstermin per Telefon oder Video.</div>
+          {% if online_slots %}
+            <div class="slots">
+              {% for slot in online_slots %}
+                <form method="post" action="/book/{{ lead_id }}">
+                  <input type="hidden" name="mode" value="online">
+                  <input type="hidden" name="slot" value="{{ slot.value }}">
+                  <button type="submit">{{ slot.label }}</button>
+                </form>
+              {% endfor %}
+            </div>
+          {% else %}
+            <div class="empty">Aktuell sind keine freien Online-Termine auslesbar.</div>
+          {% endif %}
+        </div>
+      {% else %}
+        {% for installer in installers %}
+          <div class="installer">
+            <h2>{{ installer.name }}</h2>
+            <div class="muted">{{ installer.region }}</div>
+            {% if installer.available_slots %}
+              <div class="slots">
+                {% for slot in installer.available_slots %}
+                  <form method="post" action="/book/{{ lead_id }}">
+                    <input type="hidden" name="mode" value="in_person">
+                    <input type="hidden" name="installer_id" value="{{ installer.id }}">
+                    <input type="hidden" name="slot" value="{{ slot.value }}">
+                    <button type="submit">{{ slot.label }}</button>
+                  </form>
+                {% endfor %}
+              </div>
+            {% else %}
+              <div class="empty">Aktuell sind fuer dieses Team keine freien Termine auslesbar.</div>
+            {% endif %}
+          </div>
+        {% endfor %}
+      {% endif %}
+    </section>
   </main>
 </body>
 </html>

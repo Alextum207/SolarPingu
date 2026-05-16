@@ -332,6 +332,10 @@ async def _persist_summary(lead: SolarLeadIntake, state: dict[str, Any]) -> None
         call_summary=summary,
         planning_context=_planning_context(stored or {}),
     )
+    customer_followup = email.send_customer_booking_followup(
+        lead,
+        summary=summary,
+    )
     if stored is not None:
         voice = stored.get("voice") or {}
         voice["twilio_conversation"] = {
@@ -341,6 +345,7 @@ async def _persist_summary(lead: SolarLeadIntake, state: dict[str, Any]) -> None
             "summary": summary,
             "qualification": qualification,
             "summary_email": summary_mail,
+            "customer_booking_followup": customer_followup,
         }
         db.update_agentic_artifacts(
             lead.lead_id or "",

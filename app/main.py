@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from io import BytesIO
 from typing import Annotated, Any, Awaitable, Callable
+from urllib.parse import quote
 from uuid import uuid4
 
 import httpx
@@ -909,6 +910,12 @@ async def speechmatics_callback(payload: dict[str, Any]) -> dict[str, Any]:
             voice_result=voice.model_dump(mode="json"),
             planning_context=_email_planning_context(agentic),
         )
+        customer_followup = None
+        if voice.intent in {"closed", "ready_to_book"}:
+            customer_followup = email.send_customer_booking_followup(
+                lead,
+                summary=voice.response_text,
+            )
         db.update_agentic_artifacts(
             lead_id,
             status=voice.next_status,
@@ -919,6 +926,7 @@ async def speechmatics_callback(payload: dict[str, Any]) -> dict[str, Any]:
                 "qualification": qualification,
                 "voice_result": voice.model_dump(mode="json"),
                 "summary_email": summary_mail,
+                "customer_booking_followup": customer_followup,
             },
         )
         return {
@@ -983,6 +991,7 @@ def confirm_installer_slot(
     lead_id: str,
     slot: str | None = None,
     installer_id: str | None = None,
+    mode: str = "in_person",
 ) -> HTMLResponse:
     stored = db.get_agentic_lead(lead_id)
     if stored is None:
@@ -991,6 +1000,7 @@ def confirm_installer_slot(
     installer = installers.get_installer(installer_id)
     selected = _selected_installer_slot(slot, calendar_id=installer["calendar_id"])
     end = selected + timedelta(minutes=calendar.SLOT_MINUTES)
+    appointment_kind = "Online-Beratung" if mode == "online" else "Vor-Ort-Planung"
     voice = stored.get("voice") or {}
     existing_appointment = voice.get("installer_appointment") or {}
     existing_start_raw = existing_appointment.get("start")
@@ -1023,6 +1033,7 @@ def confirm_installer_slot(
         end=end,
         calendar_id=installer["calendar_id"],
         idempotency_key=f"installer:{lead_id}:{installer['id']}:{selected.isoformat()}",
+        appointment_kind=appointment_kind,
         replace_event_id=(
             str(existing_appointment.get("calendar_event_id"))
             if existing_appointment.get("confirmed")
@@ -1045,7 +1056,16 @@ def confirm_installer_slot(
         "calendar_id": installer["calendar_id"],
         "calendar_event_id": booking.event_id,
         "calendar_link": booking.html_link,
+        "mode": mode,
     }
+    customer_confirmation = email.send_customer_appointment_confirmed(
+        lead=lead,
+        selected_start=selected,
+        selected_end=end,
+        mode=mode,
+        installer_name=installer["name"],
+    )
+    voice["customer_appointment_confirmation"] = customer_confirmation
     db.update_agentic_artifacts(lead_id, status="installer_appointment_confirmed", voice=voice)
     return _installer_confirmation_page(
         lead=lead,
@@ -1609,6 +1629,10 @@ async def voice_session(payload: VoiceSessionCreate) -> dict[str, Any]:
             planning_context=_email_planning_context(stored),
         )
         voice_payload["summary_email"] = summary_mail
+        voice_payload["customer_booking_followup"] = email.send_customer_booking_followup(
+            lead,
+            summary=voice.response_text,
+        )
     db.update_agentic_artifacts(
         payload.lead_id,
         status=voice.next_status,
@@ -1618,14 +1642,111 @@ async def voice_session(payload: VoiceSessionCreate) -> dict[str, Any]:
 
 
 @app.get("/book/{lead_id}", response_class=HTMLResponse)
-def book_page(request: Request, lead_id: str) -> HTMLResponse:
+def book_page(request: Request, lead_id: str, mode: str = "in_person") -> HTMLResponse:
     stored = db.get_agentic_lead(lead_id)
     if stored is None:
         raise HTTPException(status_code=404, detail="Lead not found.")
+    selected_mode = "online" if mode == "online" else "in_person"
+    installer_options = installers.installer_slot_options(max_slots_per_installer=8)
+    online_slots = [
+        slot.model_dump(mode="json")
+        for slot in calendar.get_available_slots(max_slots=8)
+    ]
     return templates.TemplateResponse(
         request,
         "book.html",
-        {"lead_id": lead_id, "lead": stored.get("intake"), "public_base_url": settings.public_base_url},
+        {
+            "lead_id": lead_id,
+            "lead": stored.get("intake"),
+            "mode": selected_mode,
+            "online_slots": online_slots,
+            "installers": installer_options,
+            "public_base_url": settings.public_base_url,
+        },
+    )
+
+
+@app.post("/book/{lead_id}", response_class=HTMLResponse)
+def request_customer_appointment(
+    request: Request,
+    lead_id: str,
+    mode: Annotated[str, Form()],
+    slot: Annotated[str, Form()],
+    installer_id: Annotated[str | None, Form()] = None,
+) -> HTMLResponse:
+    stored = db.get_agentic_lead(lead_id)
+    if stored is None:
+        raise HTTPException(status_code=404, detail="Lead not found.")
+    lead = SolarLeadIntake.model_validate(stored["intake"])
+    selected_mode = "online" if mode == "online" else "in_person"
+    installer = installers.get_installer(installer_id)
+    selected = _selected_installer_slot(slot, calendar_id=installer["calendar_id"])
+    end = selected + timedelta(minutes=calendar.SLOT_MINUTES)
+    confirm_url = (
+        f"{settings.public_base_url}/installer/confirm/{lead_id}"
+        f"?installer_id={quote(installer['id'])}"
+        f"&slot={quote(selected.isoformat())}"
+        f"&mode={quote(selected_mode)}"
+    )
+    dashboard_url = f"{settings.public_base_url}/dashboard/leads/{lead_id}"
+    request_mail = email.send_installer_booking_request(
+        lead=lead,
+        installer=installer,
+        selected_start=selected,
+        selected_end=end,
+        mode=selected_mode,
+        confirm_url=confirm_url,
+        dashboard_url=dashboard_url,
+    )
+    voice = stored.get("voice") or {}
+    voice["customer_booking_request"] = {
+        "status": "pending_installer_confirmation",
+        "mode": selected_mode,
+        "start": selected.isoformat(),
+        "end": end.isoformat(),
+        "installer_id": installer["id"],
+        "installer_name": installer["name"],
+        "installer_email": installer.get("email"),
+        "confirm_url": confirm_url,
+        "dashboard_url": dashboard_url,
+        "installer_email_status": request_mail.get("status"),
+    }
+    db.update_agentic_artifacts(
+        lead_id,
+        status="customer_slot_requested",
+        voice=voice,
+    )
+    return _customer_booking_requested_page(
+        lead=lead,
+        selected=selected,
+        mode=selected_mode,
+        installer_name=installer["name"],
+    )
+
+
+def _customer_booking_requested_page(
+    *,
+    lead: SolarLeadIntake,
+    selected: datetime,
+    mode: str,
+    installer_name: str,
+) -> HTMLResponse:
+    mode_label = "Online-Termin" if mode == "online" else "Vor-Ort-Termin"
+    return HTMLResponse(
+        f"""<!doctype html>
+<html lang="de">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Termin angefragt</title></head>
+<body style="font-family:Arial,sans-serif;background:#f4f7f2;color:#172018;margin:0;padding:32px;">
+  <main style="max-width:680px;margin:0 auto;background:white;border:1px solid #dbe6d6;border-radius:8px;padding:24px;">
+    <h1 style="margin-top:0;">Terminwunsch ist eingegangen</h1>
+    <p>Danke {lead.name}. Wir haben Ihren Wunsch-Termin an den Handwerker weitergegeben.</p>
+    <p><strong>Art:</strong> {mode_label}</p>
+    <p><strong>Termin:</strong> {selected.strftime('%d.%m.%Y %H:%M Uhr')}</p>
+    <p><strong>Team:</strong> {installer_name}</p>
+    <p>Sobald der Termin final bestaetigt ist, schicken wir Ihnen die Buchungsbestaetigung per E-Mail.</p>
+  </main>
+</body>
+</html>"""
     )
 
 

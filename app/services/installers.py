@@ -12,6 +12,7 @@ def configured_installers() -> list[dict[str, Any]]:
             "id": str(installer.get("id")),
             "name": str(installer.get("name") or installer.get("id")),
             "calendar_id": str(installer.get("calendar_id")),
+            "email": str(installer.get("email") or installer.get("calendar_id")),
             "region": str(installer.get("region") or "Standardgebiet"),
         }
         for installer in settings.installers
