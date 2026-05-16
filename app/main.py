@@ -993,18 +993,26 @@ def confirm_installer_slot(
     end = selected + timedelta(minutes=calendar.SLOT_MINUTES)
     voice = stored.get("voice") or {}
     existing_appointment = voice.get("installer_appointment") or {}
+    existing_start_raw = existing_appointment.get("start")
+    existing_start = None
+    if existing_start_raw:
+        try:
+            existing_start = datetime.fromisoformat(str(existing_start_raw)).astimezone(settings.tz)
+        except ValueError:
+            existing_start = None
     if existing_appointment.get("confirmed"):
-        return _installer_confirmation_page(
-            lead=lead,
-            lead_id=lead_id,
-            installer_name=str(existing_appointment.get("installer_name") or installer["name"]),
-            selected=datetime.fromisoformat(
-                str(existing_appointment.get("start") or selected.isoformat())
-            ).astimezone(settings.tz),
-            address=lead.address,
-            event_id=str(existing_appointment.get("calendar_event_id") or "already-confirmed"),
-            reused=True,
-        )
+        same_slot = existing_start == selected
+        same_installer = existing_appointment.get("installer_id") == installer["id"]
+        if same_slot and same_installer:
+            return _installer_confirmation_page(
+                lead=lead,
+                lead_id=lead_id,
+                installer_name=str(existing_appointment.get("installer_name") or installer["name"]),
+                selected=existing_start or selected,
+                address=lead.address,
+                event_id=str(existing_appointment.get("calendar_event_id") or "already-confirmed"),
+                reused=True,
+            )
     booking = calendar.book_qualification_call(
         name=lead.name,
         email=str(lead.email),
@@ -1015,6 +1023,18 @@ def confirm_installer_slot(
         end=end,
         calendar_id=installer["calendar_id"],
         idempotency_key=f"installer:{lead_id}:{installer['id']}:{selected.isoformat()}",
+        replace_event_id=(
+            str(existing_appointment.get("calendar_event_id"))
+            if existing_appointment.get("confirmed")
+            and existing_appointment.get("calendar_event_id")
+            else None
+        ),
+        replace_calendar_id=(
+            str(existing_appointment.get("calendar_id"))
+            if existing_appointment.get("confirmed")
+            and existing_appointment.get("calendar_id")
+            else None
+        ),
     )
     voice["installer_appointment"] = {
         "confirmed": True,
@@ -1035,6 +1055,7 @@ def confirm_installer_slot(
         address=lead.address,
         event_id=booking.event_id,
         reused=booking.reused,
+        updated=bool(existing_appointment.get("confirmed")),
     )
 
 
@@ -1047,12 +1068,17 @@ def _installer_confirmation_page(
     address: str,
     event_id: str,
     reused: bool,
+    updated: bool = False,
 ) -> HTMLResponse:
-    status_text = (
-        "Dieser Lead hatte bereits einen bestaetigten Termin; es wurde kein zweiter Kalendertermin erstellt."
-        if reused
-        else "Der Vor-Ort-Planungstermin wurde geblockt."
-    )
+    if reused:
+        status_text = (
+            "Dieser Lead hatte bereits diesen bestaetigten Termin; es wurde kein zweiter "
+            "Kalendertermin erstellt."
+        )
+    elif updated:
+        status_text = "Der vorhandene Kalendertermin wurde auf diesen Slot verschoben."
+    else:
+        status_text = "Der Vor-Ort-Planungstermin wurde geblockt."
     return HTMLResponse(
         f"""<!doctype html>
 <html lang="de">

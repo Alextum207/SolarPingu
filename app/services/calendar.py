@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 from app.config import settings
 from app.models import Slot
@@ -179,10 +180,12 @@ def book_qualification_call(
     end: datetime,
     calendar_id: str | None = None,
     idempotency_key: str | None = None,
+    replace_event_id: str | None = None,
+    replace_calendar_id: str | None = None,
 ) -> CalendarBooking:
     service = _google_service()
     if service is None:
-        return CalendarBooking(event_id=f"local-{uuid4().hex}", html_link=None)
+        return CalendarBooking(event_id=replace_event_id or f"local-{uuid4().hex}", html_link=None)
 
     target_calendar_id = calendar_id or settings.google_calendar_id
     summary = f"Solar Vor-Ort-Planung - {name}"
@@ -214,6 +217,32 @@ def book_qualification_call(
                 "solar_lead_booking_key": idempotency_key,
             }
         }
+    if replace_event_id:
+        source_calendar_id = replace_calendar_id or target_calendar_id
+        if source_calendar_id == target_calendar_id:
+            try:
+                updated = (
+                    service.events()
+                    .patch(
+                        calendarId=target_calendar_id,
+                        eventId=replace_event_id,
+                        body=event,
+                    )
+                    .execute()
+                )
+                return CalendarBooking(event_id=updated["id"], html_link=updated.get("htmlLink"))
+            except HttpError as exc:
+                if exc.resp.status not in {404, 410}:
+                    raise
+        else:
+            try:
+                service.events().delete(
+                    calendarId=source_calendar_id,
+                    eventId=replace_event_id,
+                ).execute()
+            except HttpError as exc:
+                if exc.resp.status not in {404, 410}:
+                    raise
     created = (
         service.events()
         .insert(
