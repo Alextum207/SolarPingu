@@ -870,21 +870,35 @@ def test_conversation_summary_includes_agent2_plan(monkeypatch, tmp_path) -> Non
 
     assert result["status"] == "demo_logged"
     assert "Lead information" in result["body"]
-    assert "Bild von den moeglichen Solar Panels von Agent 2" in result["body"]
-    assert "/api/leads/L-PLAN/panel-plan.png" in result["body"]
+    assert "Agent-2-Dashboard" in result["body"]
+    assert "/dashboard/leads/L-PLAN" in result["body"]
+    assert "Bild von den moeglichen Solar Panels von Agent 2" not in result["body"]
+    assert "/api/leads/L-PLAN/panel-plan.png" not in result["body"]
     assert "/installer/confirm/L-PLAN" in result["body"]
     assert "installer_id=solar_emergies" in result["body"]
     assert "installer_id=partner_west" in result["body"]
-    assert "Agent-2-Plan fuer Vor-Ort-Termin" in result["body"]
-    assert "Smart PV Paket" in result["body"]
     assert "Mo, 18.05. 10:00 Uhr" in result["body"]
     assert "Di, 19.05. 09:30 Uhr" in result["body"]
     assert "finales Vor-Ort-Planungsgespraech" in result["body"]
     assert result["html_body"] is not None
+    assert "Agent-2-Details im Dashboard oeffnen" in result["html_body"]
     assert "Freie Termine aus dem Telefonat auswaehlen" in result["html_body"]
     assert "Partner West" in result["html_body"]
     assert "Call-Audio" in result["html_body"]
     assert "Gespraechszusammenfassung" in result["html_body"]
+
+
+def test_dashboard_lead_detail_alias_opens_exact_lead(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path / 'dashboard.db'}")
+    db.init_db()
+
+    with TestClient(app) as client:
+        lead = client.post("/api/intake", json=_pursue_payload()).json()
+        response = client.get(f"/dashboard/leads/{lead['lead_id']}")
+
+    assert response.status_code == 200
+    assert lead["lead_id"] in response.text
+    assert "Interne Demo / Debug" in response.text
 
 
 def test_panel_plan_image_and_installer_confirm(monkeypatch, tmp_path) -> None:

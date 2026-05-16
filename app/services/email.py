@@ -170,8 +170,8 @@ def send_conversation_summary(
         qualification=qualification,
     )
     summary = _summary_line(call_summary, qualification, voice_result, transcript)
-    panel_caption = _panel_caption(planning_context)
     confirm_url = _confirm_url(lead_id, planning_context)
+    dashboard_url = _dashboard_url(lead_id)
     appointment_lines = _appointment_option_lines(lead_id, planning_context, qualification)
     recording_lines = _call_recording_lines(planning_context)
     body = "\n".join(
@@ -184,18 +184,14 @@ def send_conversation_summary(
             "Lead information",
             *lead_info,
             "",
-            "Bild von den moeglichen Solar Panels von Agent 2",
-            f"{_panel_plan_image_url(lead_id)}",
-            panel_caption,
+            "Agent-2-Dashboard",
+            f"- Lead-Details, Systemplanung, Dachansicht und Handoff: {dashboard_url}",
             "",
             "Freie Termine aus dem Telefonat auswaehlen",
             *appointment_lines,
             "",
             "Call-Audio",
             *recording_lines,
-            "",
-            "Agent-2-Plan fuer Vor-Ort-Termin",
-            *_planning_lines(planning_context),
             "",
             "Klare naechste Schritte",
             *_next_step_lines(qualification, voice_result),
@@ -210,11 +206,10 @@ def send_conversation_summary(
         lead_id=lead_id,
         source=source,
         lead_info=lead_info,
-        panel_caption=panel_caption,
+        dashboard_url=dashboard_url,
         confirm_url=confirm_url,
         appointment_options_html=_appointment_options_html(lead_id, planning_context, qualification),
         recording_html=_call_recording_html(planning_context),
-        planning_lines=_planning_lines(planning_context),
         next_step_lines=_next_step_lines(qualification, voice_result),
         summary=summary,
         conversation_lines=_conversation_lines(conversation_turns, transcript),
@@ -310,6 +305,10 @@ def _lead_information_lines(
 
 def _panel_plan_image_url(lead_id: str) -> str:
     return f"{settings.public_base_url}/api/leads/{lead_id}/panel-plan.png"
+
+
+def _dashboard_url(lead_id: str) -> str:
+    return f"{settings.public_base_url}/dashboard/leads/{lead_id}"
 
 
 def _call_recording_lines(planning_context: dict[str, Any]) -> list[str]:
@@ -555,11 +554,10 @@ def _conversation_summary_html(
     lead_id: str,
     source: str,
     lead_info: list[str],
-    panel_caption: str,
+    dashboard_url: str,
     confirm_url: str,
     appointment_options_html: str,
     recording_html: str,
-    planning_lines: list[str],
     next_step_lines: list[str],
     summary: str,
     conversation_lines: list[str],
@@ -570,7 +568,6 @@ def _conversation_summary_html(
     def list_html(items: list[str]) -> str:
         return "".join(f"<li>{esc(item.removeprefix('- '))}</li>" for item in items)
 
-    image_url = _panel_plan_image_url(lead_id)
     return f"""<!doctype html>
 <html>
   <body style="margin:0;background:#f4f7f2;font-family:Arial,sans-serif;color:#172018;">
@@ -585,9 +582,15 @@ def _conversation_summary_html(
             <h2 style="font-size:18px;margin:0 0 10px;">Lead information</h2>
             <ul style="margin:0 0 24px;padding-left:20px;line-height:1.55;">{list_html(lead_info)}</ul>
 
-            <h2 style="font-size:18px;margin:0 0 10px;">Bild von den moeglichen Solar Panels von Agent 2</h2>
-            <img src="{esc(image_url)}" alt="Grobe Solar Panel Planung" style="width:100%;max-width:624px;border:1px solid #dbe6d6;border-radius:8px;display:block;">
-            <p style="margin:10px 0 24px;color:#4b5b4e;font-size:14px;">{esc(panel_caption)}</p>
+            <h2 style="font-size:18px;margin:0 0 10px;">Agent-2-Dashboard</h2>
+            <p style="line-height:1.55;margin:0 0 14px;color:#4b5b4e;">
+              Lead-Details, Systemplanung, Dachansicht und Handoff liegen im Dashboard.
+            </p>
+            <p style="margin:0 0 24px;">
+              <a href="{esc(dashboard_url)}" style="display:inline-block;background:#15351f;color:#ffffff;text-decoration:none;font-weight:bold;padding:14px 18px;border-radius:6px;">
+                Agent-2-Details im Dashboard oeffnen
+              </a>
+            </p>
 
             <p style="margin:0 0 22px;">
               <a href="{esc(confirm_url)}" style="display:inline-block;background:#1d6f42;color:#ffffff;text-decoration:none;font-weight:bold;padding:14px 18px;border-radius:6px;">
@@ -600,9 +603,6 @@ def _conversation_summary_html(
 
             <h2 style="font-size:18px;margin:0 0 10px;">Call-Audio</h2>
             {recording_html}
-
-            <h2 style="font-size:18px;margin:0 0 10px;">Agent-2-Plan</h2>
-            <ul style="margin:0 0 24px;padding-left:20px;line-height:1.55;">{list_html(planning_lines)}</ul>
 
             <h2 style="font-size:18px;margin:0 0 10px;">Naechste Schritte</h2>
             <ul style="margin:0 0 24px;padding-left:20px;line-height:1.55;">{list_html(next_step_lines)}</ul>

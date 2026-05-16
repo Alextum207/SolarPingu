@@ -1619,6 +1619,23 @@ def demo_page(request: Request, lead_id: str) -> HTMLResponse:
     )
 
 
+@app.get("/dashboard/leads/{lead_id}", response_class=HTMLResponse)
+def dashboard_lead_detail(request: Request, lead_id: str) -> HTMLResponse:
+    stored = db.get_agentic_lead(lead_id)
+    if stored is None:
+        raise HTTPException(status_code=404, detail="Lead not found.")
+    return templates.TemplateResponse(
+        request,
+        "demo.html",
+        {
+            "lead_id": lead_id,
+            "record": stored,
+            "lead": stored.get("intake"),
+            "speechmatics_configured": bool(settings.speechmatics_api_key),
+        },
+    )
+
+
 @app.post("/webhooks/vapi")
 async def vapi_callback(payload: dict[str, Any]) -> dict[str, Any]:
     lead_id, call_id, event_type = vapi.extract_event(payload)
@@ -1816,6 +1833,7 @@ def _lead_links(lead_id: str, *, has_offer: bool) -> dict[str, str | None]:
     return {
         "leadUrl": f"{settings.public_base_url}/api/leads/{lead_id}",
         "demoUrl": f"{settings.public_base_url}/demo/{lead_id}",
+        "dashboardUrl": f"{settings.public_base_url}/dashboard/leads/{lead_id}",
         "handoffUrl": f"{settings.public_base_url}/api/leads/{lead_id}/handoff",
         "offerPdfUrl": (
             f"{settings.public_base_url}/api/leads/{lead_id}/offer.pdf"
