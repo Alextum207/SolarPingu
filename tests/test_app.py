@@ -890,15 +890,15 @@ def test_conversation_summary_includes_agent2_plan(monkeypatch, tmp_path) -> Non
 
 def test_dashboard_lead_detail_alias_opens_exact_lead(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path / 'dashboard.db'}")
+    monkeypatch.setattr(settings, "dashboard_url_template", "http://127.0.0.1:5175/?leadId={lead_id}")
     db.init_db()
 
     with TestClient(app) as client:
         lead = client.post("/api/intake", json=_pursue_payload()).json()
-        response = client.get(f"/dashboard/leads/{lead['lead_id']}")
+        response = client.get(f"/dashboard/leads/{lead['lead_id']}", follow_redirects=False)
 
-    assert response.status_code == 200
-    assert lead["lead_id"] in response.text
-    assert "Interne Demo / Debug" in response.text
+    assert response.status_code == 302
+    assert response.headers["location"] == f"http://127.0.0.1:5175/?leadId={lead['lead_id']}"
 
 
 def test_panel_plan_image_and_installer_confirm(monkeypatch, tmp_path) -> None:
