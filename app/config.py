@@ -33,6 +33,13 @@ class Settings:
         "TWILIO_RELAY_TRANSCRIPTION_PROVIDER",
         "Deepgram",
     )
+    twilio_record_calls: bool = os.getenv("TWILIO_RECORD_CALLS", "true").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    call_audio_attachment_max_mb: int = int(os.getenv("CALL_AUDIO_ATTACHMENT_MAX_MB", "18"))
     google_calendar_id: str = os.getenv("GOOGLE_CALENDAR_ID", "primary")
     installers_json: str = os.getenv("INSTALLERS_JSON", "")
     google_application_credentials: str | None = (

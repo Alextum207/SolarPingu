@@ -22,7 +22,9 @@ def _send_email(
     body: str,
     lead_id: str | None,
     html_body: str | None = None,
+    attachments: list[dict[str, Any]] | None = None,
 ) -> dict:
+    attachments = attachments or []
     if not (settings.smtp_host and settings.smtp_user and settings.smtp_password):
         db.add_email_event(
             lead_id=lead_id,
@@ -38,6 +40,7 @@ def _send_email(
             "subject": subject,
             "body": body,
             "html_body": html_body,
+            "attachments": [attachment.get("filename") for attachment in attachments],
         }
 
     message = EmailMessage()
@@ -47,6 +50,18 @@ def _send_email(
     message.set_content(body)
     if html_body:
         message.add_alternative(html_body, subtype="html")
+    for attachment in attachments:
+        content = attachment.get("content")
+        if not isinstance(content, bytes):
+            continue
+        content_type = str(attachment.get("content_type") or "application/octet-stream")
+        maintype, _, subtype = content_type.partition("/")
+        message.add_attachment(
+            content,
+            maintype=maintype or "application",
+            subtype=subtype or "octet-stream",
+            filename=str(attachment.get("filename") or "call-audio.mp3"),
+        )
     try:
         with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=20) as smtp:
             smtp.starttls()
@@ -76,7 +91,13 @@ def _send_email(
         status="sent",
         provider_response="SMTP sent",
     )
-    return {"sent": True, "status": "sent", "subject": subject, "html_body": html_body}
+    return {
+        "sent": True,
+        "status": "sent",
+        "subject": subject,
+        "html_body": html_body,
+        "attachments": [attachment.get("filename") for attachment in attachments],
+    }
 
 
 def send_decision_email(
@@ -152,6 +173,7 @@ def send_conversation_summary(
     panel_caption = _panel_caption(planning_context)
     confirm_url = _confirm_url(lead_id, planning_context)
     appointment_lines = _appointment_option_lines(lead_id, planning_context, qualification)
+    recording_lines = _call_recording_lines(planning_context)
     body = "\n".join(
         [
             "Solar Lead OS - Gespraechszusammenfassung",
@@ -168,6 +190,9 @@ def send_conversation_summary(
             "",
             "Freie Termine aus dem Telefonat auswaehlen",
             *appointment_lines,
+            "",
+            "Call-Audio",
+            *recording_lines,
             "",
             "Agent-2-Plan fuer Vor-Ort-Termin",
             *_planning_lines(planning_context),
@@ -188,12 +213,75 @@ def send_conversation_summary(
         panel_caption=panel_caption,
         confirm_url=confirm_url,
         appointment_options_html=_appointment_options_html(lead_id, planning_context, qualification),
+        recording_html=_call_recording_html(planning_context),
         planning_lines=_planning_lines(planning_context),
         next_step_lines=_next_step_lines(qualification, voice_result),
         summary=summary,
         conversation_lines=_conversation_lines(conversation_turns, transcript),
     )
     return _send_email(settings.conversation_summary_email, subject, body, lead_id, html_body)
+
+
+def send_call_recording_email(
+    *,
+    lead_id: str,
+    lead_name: str,
+    lead_email: str,
+    lead_phone: str,
+    recording: dict[str, Any],
+    attachment: dict[str, Any] | None = None,
+) -> dict:
+    download_url = str(recording.get("download_url") or recording.get("recording_url") or "")
+    duration = recording.get("duration")
+    subject = f"Solar Lead Call-Audio: {lead_name} ({lead_id})"
+    body = "\n".join(
+        [
+            "Solar Lead OS - Call-Audio",
+            "",
+            f"Lead ID: {lead_id}",
+            f"Name: {lead_name}",
+            f"Email: {lead_email}",
+            f"Telefon: {lead_phone}",
+            f"Dauer: {duration or 'unbekannt'} Sekunden",
+            "",
+            f"Download: {download_url}",
+            "",
+            "Hinweis: Wenn ein Audio-Anhang enthalten ist, kann er direkt aus dieser Mail heruntergeladen werden.",
+        ]
+    )
+    escaped_url = html_lib.escape(download_url)
+    html_body = f"""<!doctype html>
+<html>
+  <body style="margin:0;background:#f4f7f2;font-family:Arial,sans-serif;color:#172018;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f4f7f2;padding:24px 0;">
+      <tr><td align="center">
+        <table role="presentation" width="640" cellspacing="0" cellpadding="0" style="width:640px;max-width:94%;background:#ffffff;border:1px solid #dbe6d6;border-radius:8px;overflow:hidden;">
+          <tr><td style="padding:24px 28px;background:#15351f;color:#ffffff;">
+            <h1 style="margin:0;font-size:24px;line-height:1.25;">Call-Audio verfuegbar</h1>
+          </td></tr>
+          <tr><td style="padding:24px 28px;">
+            <p style="line-height:1.55;margin:0 0 16px;">Die Aufnahme fuer <strong>{html_lib.escape(lead_name)}</strong> ist verfuegbar.</p>
+            <p style="margin:0 0 22px;">
+              <a href="{escaped_url}" style="display:inline-block;background:#1d6f42;color:#ffffff;text-decoration:none;font-weight:bold;padding:14px 18px;border-radius:6px;">
+                Call-Audio herunterladen
+              </a>
+            </p>
+            <p style="color:#4b5b4e;font-size:14px;margin:0;">Lead: {html_lib.escape(lead_id)} | Dauer: {html_lib.escape(str(duration or 'unbekannt'))} Sekunden</p>
+          </td></tr>
+        </table>
+      </td></tr>
+    </table>
+  </body>
+</html>"""
+    attachments = [attachment] if attachment else []
+    return _send_email(
+        settings.conversation_summary_email,
+        subject,
+        body,
+        lead_id,
+        html_body,
+        attachments=attachments,
+    )
 
 
 def _lead_information_lines(
@@ -222,6 +310,36 @@ def _lead_information_lines(
 
 def _panel_plan_image_url(lead_id: str) -> str:
     return f"{settings.public_base_url}/api/leads/{lead_id}/panel-plan.png"
+
+
+def _call_recording_lines(planning_context: dict[str, Any]) -> list[str]:
+    recording = planning_context.get("call_recording") or {}
+    download_url = recording.get("download_url")
+    if not download_url:
+        return ["- Noch keine Aufnahme verfuegbar. Sie wird nach Call-Ende automatisch nachgereicht."]
+    duration = recording.get("duration")
+    suffix = f" ({duration} Sekunden)" if duration else ""
+    return [f"- Audio-Download{suffix}: {download_url}"]
+
+
+def _call_recording_html(planning_context: dict[str, Any]) -> str:
+    recording = planning_context.get("call_recording") or {}
+    download_url = recording.get("download_url")
+    if not download_url:
+        return (
+            "<p style=\"margin:0 0 24px;color:#4b5b4e;line-height:1.55;\">"
+            "Noch keine Aufnahme verfuegbar. Sie wird nach Call-Ende automatisch nachgereicht.</p>"
+        )
+    duration = recording.get("duration")
+    detail = f"Call-Dauer: {html_lib.escape(str(duration))} Sekunden" if duration else "Call-Audio"
+    return f"""
+            <p style="margin:0 0 10px;color:#4b5b4e;line-height:1.55;">{detail}</p>
+            <p style="margin:0 0 24px;">
+              <a href="{html_lib.escape(str(download_url))}" style="display:inline-block;background:#1d6f42;color:#ffffff;text-decoration:none;font-weight:bold;padding:12px 16px;border-radius:6px;">
+                Call-Audio herunterladen
+              </a>
+            </p>
+    """
 
 
 def _confirm_url(lead_id: str, planning_context: dict[str, Any]) -> str:
@@ -440,6 +558,7 @@ def _conversation_summary_html(
     panel_caption: str,
     confirm_url: str,
     appointment_options_html: str,
+    recording_html: str,
     planning_lines: list[str],
     next_step_lines: list[str],
     summary: str,
@@ -478,6 +597,9 @@ def _conversation_summary_html(
 
             <h2 style="font-size:18px;margin:0 0 10px;">Freie Termine aus dem Telefonat auswaehlen</h2>
             {appointment_options_html}
+
+            <h2 style="font-size:18px;margin:0 0 10px;">Call-Audio</h2>
+            {recording_html}
 
             <h2 style="font-size:18px;margin:0 0 10px;">Agent-2-Plan</h2>
             <ul style="margin:0 0 24px;padding-left:20px;line-height:1.55;">{list_html(planning_lines)}</ul>

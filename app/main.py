@@ -972,6 +972,7 @@ def _email_planning_context(stored: dict[str, Any]) -> dict[str, Any]:
         "handoff": stored.get("handoff"),
         "available_slots": slots,
         "installers": installer_options,
+        "call_recording": (stored.get("voice") or {}).get("twilio_recording"),
     }
 
 
@@ -1372,6 +1373,123 @@ async def twilio_status_callback(lead_id: str, request: Request) -> dict[str, An
             voice=voice,
         )
     return {"ok": True, "lead_id": lead_id, "call_sid": call_sid, "status": call_status}
+
+
+@app.post("/webhooks/twilio/recording/{lead_id}")
+async def twilio_recording_callback(lead_id: str, request: Request) -> dict[str, Any]:
+    form = await request.form()
+    payload = twilio_bridge.status_payload(dict(form))
+    call_sid = payload.get("CallSid") or ""
+    recording_sid = payload.get("RecordingSid") or ""
+    recording_url = payload.get("RecordingUrl") or ""
+    recording_status = payload.get("RecordingStatus") or "unknown"
+    duration = payload.get("RecordingDuration")
+    download_url = (
+        f"{settings.public_base_url}/api/leads/{lead_id}/call-audio"
+        f"?recording_sid={recording_sid}"
+        if recording_sid
+        else ""
+    )
+
+    db.add_vapi_event(
+        lead_id=lead_id,
+        call_id=call_sid,
+        event_type=f"twilio_recording_{recording_status}",
+        payload=payload,
+    )
+    stored = db.get_agentic_lead(lead_id)
+    if stored is None:
+        return {"ok": False, "lead_id": lead_id, "status": "lead_not_found"}
+
+    voice = stored.get("voice") or {}
+    recording = {
+        "call_sid": call_sid,
+        "recording_sid": recording_sid,
+        "recording_url": recording_url,
+        "recording_status": recording_status,
+        "duration": duration,
+        "download_url": download_url,
+        "payload": payload,
+    }
+    voice["twilio_recording"] = recording
+
+    mail = None
+    already_sent_for = (voice.get("twilio_recording_email") or {}).get("recording_sid")
+    if recording_status == "completed" and recording_url and already_sent_for != recording_sid:
+        mail = await _send_call_recording_email(stored, recording)
+        voice["twilio_recording_email"] = {
+            "recording_sid": recording_sid,
+            "status": mail.get("status") if mail else "not_sent",
+            "sent": bool(mail and mail.get("sent")),
+        }
+
+    db.update_agentic_artifacts(
+        lead_id,
+        status=str(stored.get("status") or "twilio_recording_available"),
+        voice=voice,
+    )
+    return {
+        "ok": True,
+        "lead_id": lead_id,
+        "recording_sid": recording_sid,
+        "status": recording_status,
+        "summary_email": mail,
+    }
+
+
+@app.get("/api/leads/{lead_id}/call-audio")
+async def download_call_audio(lead_id: str, recording_sid: str | None = None) -> Response:
+    stored = db.get_agentic_lead(lead_id)
+    if stored is None:
+        raise HTTPException(status_code=404, detail="Lead not found.")
+    recording = (stored.get("voice") or {}).get("twilio_recording") or {}
+    if recording_sid and recording.get("recording_sid") != recording_sid:
+        raise HTTPException(status_code=404, detail="Recording not found.")
+    recording_url = recording.get("recording_url")
+    if not recording_url:
+        raise HTTPException(status_code=404, detail="Recording URL not available yet.")
+    audio = await twilio_bridge.download_recording_audio(recording_url, lead_id=lead_id)
+    headers = {
+        "Content-Disposition": f'attachment; filename="{audio["filename"]}"',
+        "Cache-Control": "private, max-age=300",
+    }
+    return Response(
+        content=audio["content"],
+        media_type=audio["content_type"],
+        headers=headers,
+    )
+
+
+async def _send_call_recording_email(
+    stored: dict[str, Any],
+    recording: dict[str, Any],
+) -> dict[str, Any]:
+    lead = SolarLeadIntake.model_validate(stored["intake"])
+    attachment = None
+    recording_url = str(recording.get("recording_url") or "")
+    if recording_url:
+        try:
+            audio = await twilio_bridge.download_recording_audio(
+                recording_url,
+                lead_id=lead.lead_id or "",
+            )
+            max_bytes = settings.call_audio_attachment_max_mb * 1024 * 1024
+            if len(audio["content"]) <= max_bytes:
+                attachment = {
+                    "filename": audio["filename"],
+                    "content": audio["content"],
+                    "content_type": audio["content_type"],
+                }
+        except Exception as exc:
+            recording["attachment_error"] = str(exc)
+    return email.send_call_recording_email(
+        lead_id=lead.lead_id or "",
+        lead_name=lead.name,
+        lead_email=str(lead.email),
+        lead_phone=lead.phone,
+        recording=recording,
+        attachment=attachment,
+    )
 
 
 @app.api_route("/webhooks/twilio/relay-ended/{lead_id}", methods=["GET", "POST"])

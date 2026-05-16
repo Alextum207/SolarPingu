@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import json
+from pathlib import PurePosixPath
 import unicodedata
 from typing import Any
 
@@ -117,6 +118,16 @@ async def create_customer_call(
         ("StatusCallbackEvent", "completed"),
         ("StatusCallbackMethod", "POST"),
     ]
+    if settings.twilio_record_calls:
+        data.extend(
+            [
+                ("Record", "true"),
+                ("RecordingChannels", "dual"),
+                ("RecordingStatusCallback", _public_http_url(f"/webhooks/twilio/recording/{lead_id}")),
+                ("RecordingStatusCallbackMethod", "POST"),
+                ("RecordingStatusCallbackEvent", "completed"),
+            ]
+        )
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.post(
             url,
@@ -342,6 +353,37 @@ def status_payload(form: dict[str, Any]) -> dict[str, Any]:
     return {key: str(value) for key, value in form.items()}
 
 
+def recording_media_url(recording_url: str, extension: str = "mp3") -> str:
+    if not recording_url:
+        return recording_url
+    suffix = PurePosixPath(recording_url.split("?", 1)[0]).suffix
+    if suffix:
+        return recording_url
+    return f"{recording_url}.{extension.lstrip('.')}"
+
+
+async def download_recording_audio(
+    recording_url: str,
+    *,
+    lead_id: str,
+) -> dict[str, Any]:
+    media_url = recording_media_url(recording_url, "mp3")
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(
+            media_url,
+            auth=(settings.twilio_account_sid or "", settings.twilio_auth_token or ""),
+        )
+        response.raise_for_status()
+    content_type = response.headers.get("content-type") or "audio/mpeg"
+    extension = "mp3" if "mpeg" in content_type or media_url.endswith(".mp3") else "wav"
+    return {
+        "filename": f"solar-call-{lead_id}.{extension}",
+        "content": response.content,
+        "content_type": content_type,
+        "media_url": media_url,
+    }
+
+
 def _planning_context(stored: dict[str, Any]) -> dict[str, Any]:
     try:
         slots = [
@@ -358,4 +400,5 @@ def _planning_context(stored: dict[str, Any]) -> dict[str, Any]:
         "handoff": stored.get("handoff"),
         "available_slots": slots,
         "installers": installers.installer_slot_options(max_slots_per_installer=3),
+        "call_recording": (stored.get("voice") or {}).get("twilio_recording"),
     }

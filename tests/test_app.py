@@ -882,6 +882,7 @@ def test_conversation_summary_includes_agent2_plan(monkeypatch, tmp_path) -> Non
     assert result["html_body"] is not None
     assert "Freie Termine aus dem Telefonat auswaehlen" in result["html_body"]
     assert "Partner West" in result["html_body"]
+    assert "Call-Audio" in result["html_body"]
     assert "Gespraechszusammenfassung" in result["html_body"]
 
 
@@ -927,6 +928,50 @@ def test_panel_plan_image_and_installer_confirm(monkeypatch, tmp_path) -> None:
         (stored.get("voice") or {}).get("installer_appointment", {}).get("calendar_id")
         == "calendar-a@example.com"
     )
+
+
+def test_twilio_recording_callback_sends_downloadable_audio(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path / 'recording.db'}")
+    monkeypatch.setattr(settings, "public_base_url", "https://agent1.example.com")
+    db.init_db()
+
+    async def fake_download(recording_url: str, *, lead_id: str):
+        return {
+            "filename": f"solar-call-{lead_id}.mp3",
+            "content": b"fake-audio",
+            "content_type": "audio/mpeg",
+            "media_url": f"{recording_url}.mp3",
+        }
+
+    monkeypatch.setattr(twilio_bridge, "download_recording_audio", fake_download)
+
+    with TestClient(app) as client:
+        lead = client.post("/api/intake", json=_pursue_payload()).json()
+        lead_id = lead["lead_id"]
+        callback = client.post(
+            f"/webhooks/twilio/recording/{lead_id}",
+            data={
+                "CallSid": "CA123",
+                "RecordingSid": "RE123",
+                "RecordingUrl": "https://api.twilio.com/Recordings/RE123",
+                "RecordingStatus": "completed",
+                "RecordingDuration": "42",
+            },
+        )
+        audio = client.get(f"/api/leads/{lead_id}/call-audio?recording_sid=RE123")
+        stored = db.get_agentic_lead(lead_id)
+
+    assert callback.status_code == 200
+    assert callback.json()["summary_email"]["status"] == "demo_logged"
+    assert callback.json()["summary_email"]["attachments"] == [f"solar-call-{lead_id}.mp3"]
+    assert audio.status_code == 200
+    assert audio.content == b"fake-audio"
+    assert audio.headers["content-type"].startswith("audio/mpeg")
+    assert stored is not None
+    recording = (stored.get("voice") or {}).get("twilio_recording") or {}
+    assert recording["recording_sid"] == "RE123"
+    assert recording["download_url"].endswith(f"/api/leads/{lead_id}/call-audio?recording_sid=RE123")
+    assert (stored.get("voice") or {}).get("twilio_recording_email", {}).get("recording_sid") == "RE123"
 
 
 def test_speechmatics_callback_artifacts_group_speaker_turns() -> None:
