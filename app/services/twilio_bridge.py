@@ -11,7 +11,7 @@ from fastapi import WebSocket
 from app import db
 from app.config import settings
 from app.models import SolarLeadIntake
-from app.services import calendar, email, gemini
+from app.services import calendar, email, gemini, installers
 
 
 def is_configured() -> bool:
@@ -305,6 +305,10 @@ async def _persist_summary(lead: SolarLeadIntake, state: dict[str, Any]) -> None
         temperature=0.2,
         fallback=transcript[:700],
     )
+    try:
+        qualification = await gemini.extract_qualification(lead.lead_id or "", transcript)
+    except Exception:
+        qualification = {}
     summary_mail = email.send_conversation_summary(
         lead_id=lead.lead_id or "",
         lead_name=lead.name,
@@ -312,6 +316,8 @@ async def _persist_summary(lead: SolarLeadIntake, state: dict[str, Any]) -> None
         lead_phone=lead.phone,
         source="Twilio ConversationRelay",
         transcript=transcript,
+        conversation_turns=state["turns"],
+        qualification=qualification,
         call_summary=summary,
         planning_context=_planning_context(stored or {}),
     )
@@ -322,6 +328,7 @@ async def _persist_summary(lead: SolarLeadIntake, state: dict[str, Any]) -> None
             "session_id": state.get("session_id"),
             "turns": state["turns"],
             "summary": summary,
+            "qualification": qualification,
             "summary_email": summary_mail,
         }
         db.update_agentic_artifacts(
@@ -350,4 +357,5 @@ def _planning_context(stored: dict[str, Any]) -> dict[str, Any]:
         "offer": stored.get("offer"),
         "handoff": stored.get("handoff"),
         "available_slots": slots,
+        "installers": installers.installer_slot_options(max_slots_per_installer=3),
     }

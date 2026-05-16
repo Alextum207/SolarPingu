@@ -11,7 +11,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from app import db
 from app.models import SolarLeadIntake
-from app.services import calendar, email
+from app.services import calendar, email, installers
 
 
 def _latest_lead_id() -> str:
@@ -88,6 +88,7 @@ def _planning_context(stored: dict[str, Any]) -> dict[str, Any]:
         "offer": stored.get("offer"),
         "handoff": stored.get("handoff"),
         "available_slots": slots,
+        "installers": installers.installer_slot_options(max_slots_per_installer=3),
     }
 
 

@@ -835,6 +835,34 @@ def test_conversation_summary_includes_agent2_plan(monkeypatch, tmp_path) -> Non
                 "next_steps": ["Vor-Ort-Termin"],
             },
             "available_slots": [{"label": "Mo, 18.05. 10:00 Uhr"}],
+            "installers": [
+                {
+                    "id": "solar_emergies",
+                    "name": "Solar Emergies",
+                    "region": "Berlin",
+                    "available_slots": [
+                        {
+                            "value": "2026-05-18T10:00:00+02:00",
+                            "label": "Mo, 18.05. 10:00 Uhr",
+                        },
+                        {
+                            "value": "2026-05-18T14:00:00+02:00",
+                            "label": "Mo, 18.05. 14:00 Uhr",
+                        },
+                    ],
+                },
+                {
+                    "id": "partner_west",
+                    "name": "Partner West",
+                    "region": "NRW",
+                    "available_slots": [
+                        {
+                            "value": "2026-05-19T09:30:00+02:00",
+                            "label": "Di, 19.05. 09:30 Uhr",
+                        }
+                    ],
+                },
+            ],
             "handoff": {"demo_url": "https://example.test/demo/L-PLAN"},
         },
     )
@@ -844,17 +872,27 @@ def test_conversation_summary_includes_agent2_plan(monkeypatch, tmp_path) -> Non
     assert "Bild von den moeglichen Solar Panels von Agent 2" in result["body"]
     assert "/api/leads/L-PLAN/panel-plan.png" in result["body"]
     assert "/installer/confirm/L-PLAN" in result["body"]
+    assert "installer_id=solar_emergies" in result["body"]
+    assert "installer_id=partner_west" in result["body"]
     assert "Agent-2-Plan fuer Vor-Ort-Termin" in result["body"]
     assert "Smart PV Paket" in result["body"]
     assert "Mo, 18.05. 10:00 Uhr" in result["body"]
+    assert "Di, 19.05. 09:30 Uhr" in result["body"]
     assert "finales Vor-Ort-Planungsgespraech" in result["body"]
     assert result["html_body"] is not None
-    assert "Besprochenen Handwerker-Termin bestaetigen" in result["html_body"]
+    assert "Freie Termine aus dem Telefonat auswaehlen" in result["html_body"]
+    assert "Partner West" in result["html_body"]
     assert "Gespraechszusammenfassung" in result["html_body"]
 
 
 def test_panel_plan_image_and_installer_confirm(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path / 'installer.db'}")
+    monkeypatch.setattr(settings, "google_application_credentials", None)
+    monkeypatch.setattr(
+        settings,
+        "installers_json",
+        '[{"id":"installer_a","name":"Installer A","calendar_id":"calendar-a@example.com","region":"Berlin"}]',
+    )
     db.init_db()
 
     with TestClient(app) as client:
@@ -862,7 +900,16 @@ def test_panel_plan_image_and_installer_confirm(monkeypatch, tmp_path) -> None:
         lead_id = lead["lead_id"]
         client.post(f"/api/workflows/{lead_id}/run")
         image = client.get(f"/api/leads/{lead_id}/panel-plan.png")
-        confirm = client.get(f"/installer/confirm/{lead_id}")
+        slot = (datetime.now(settings.tz) + timedelta(days=2)).replace(
+            hour=11,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+        confirm = client.get(
+            f"/installer/confirm/{lead_id}",
+            params={"installer_id": "installer_a", "slot": slot.isoformat()},
+        )
         stored = db.get_agentic_lead(lead_id)
 
     assert image.status_code == 200
@@ -872,6 +919,14 @@ def test_panel_plan_image_and_installer_confirm(monkeypatch, tmp_path) -> None:
     assert stored is not None
     assert stored["status"] == "installer_appointment_confirmed"
     assert (stored.get("voice") or {}).get("installer_appointment", {}).get("confirmed") is True
+    assert (
+        (stored.get("voice") or {}).get("installer_appointment", {}).get("installer_id")
+        == "installer_a"
+    )
+    assert (
+        (stored.get("voice") or {}).get("installer_appointment", {}).get("calendar_id")
+        == "calendar-a@example.com"
+    )
 
 
 def test_speechmatics_callback_artifacts_group_speaker_turns() -> None:

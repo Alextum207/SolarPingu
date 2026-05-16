@@ -151,6 +151,7 @@ def send_conversation_summary(
     summary = _summary_line(call_summary, qualification, voice_result, transcript)
     panel_caption = _panel_caption(planning_context)
     confirm_url = _confirm_url(lead_id, planning_context)
+    appointment_lines = _appointment_option_lines(lead_id, planning_context, qualification)
     body = "\n".join(
         [
             "Solar Lead OS - Gespraechszusammenfassung",
@@ -165,8 +166,8 @@ def send_conversation_summary(
             f"{_panel_plan_image_url(lead_id)}",
             panel_caption,
             "",
-            "Termin bestaetigen",
-            f"Handwerker-Button: {confirm_url}",
+            "Freie Termine aus dem Telefonat auswaehlen",
+            *appointment_lines,
             "",
             "Agent-2-Plan fuer Vor-Ort-Termin",
             *_planning_lines(planning_context),
@@ -186,6 +187,7 @@ def send_conversation_summary(
         lead_info=lead_info,
         panel_caption=panel_caption,
         confirm_url=confirm_url,
+        appointment_options_html=_appointment_options_html(lead_id, planning_context, qualification),
         planning_lines=_planning_lines(planning_context),
         next_step_lines=_next_step_lines(qualification, voice_result),
         summary=summary,
@@ -223,6 +225,23 @@ def _panel_plan_image_url(lead_id: str) -> str:
 
 
 def _confirm_url(lead_id: str, planning_context: dict[str, Any]) -> str:
+    installers = planning_context.get("installers") or []
+    if installers:
+        for installer in installers:
+            slots = installer.get("available_slots") or []
+            if slots:
+                first_slot = slots[0]
+                slot_value = (
+                    str(first_slot.get("value") or "")
+                    if isinstance(first_slot, dict)
+                    else str(first_slot)
+                )
+                installer_id = quote(str(installer.get("id") or ""))
+                slot_query = f"&slot={quote(slot_value)}" if slot_value else ""
+                return (
+                    f"{settings.public_base_url}/installer/confirm/{lead_id}"
+                    f"?installer_id={installer_id}{slot_query}"
+                )
     slots = planning_context.get("available_slots") or []
     slot_value = ""
     if slots:
@@ -233,6 +252,166 @@ def _confirm_url(lead_id: str, planning_context: dict[str, Any]) -> str:
             slot_value = str(first_slot)
     query = f"?slot={quote(slot_value)}" if slot_value else ""
     return f"{settings.public_base_url}/installer/confirm/{lead_id}{query}"
+
+
+def _appointment_option_lines(
+    lead_id: str,
+    planning_context: dict[str, Any],
+    qualification: dict[str, Any],
+) -> list[str]:
+    installers = _installer_options(planning_context)
+    preferred = _preferred_slot_tokens(qualification, planning_context)
+    lines: list[str] = []
+    if installers:
+        for installer in installers:
+            label = installer.get("name") or installer.get("id") or "Handwerker"
+            region = installer.get("region") or "Standardgebiet"
+            slots = installer.get("available_slots") or []
+            if not slots:
+                lines.append(f"- {label} ({region}): aktuell kein freier Slot auslesbar.")
+                continue
+            lines.append(f"- {label} ({region})")
+            for slot in slots:
+                slot_label = _slot_label(slot)
+                marker = " [im Call besprochen]" if _slot_matches_preference(slot, preferred) else ""
+                lines.append(
+                    f"  {slot_label}{marker}: "
+                    f"{_confirm_url_for_slot(lead_id, installer.get('id'), slot)}"
+                )
+        return lines
+    confirm_url = _confirm_url(lead_id, planning_context)
+    return [f"- Handwerker-Button: {confirm_url}"]
+
+
+def _appointment_options_html(
+    lead_id: str,
+    planning_context: dict[str, Any],
+    qualification: dict[str, Any],
+) -> str:
+    installers = _installer_options(planning_context)
+    preferred = _preferred_slot_tokens(qualification, planning_context)
+    if not installers:
+        return ""
+    cards: list[str] = []
+    for installer in installers:
+        name = html_lib.escape(str(installer.get("name") or installer.get("id") or "Handwerker"))
+        region = html_lib.escape(str(installer.get("region") or "Standardgebiet"))
+        slots = installer.get("available_slots") or []
+        if slots:
+            slot_buttons = "".join(
+                _slot_button_html(
+                    lead_id,
+                    installer.get("id"),
+                    slot,
+                    _slot_matches_preference(slot, preferred),
+                )
+                for slot in slots
+            )
+        else:
+            slot_buttons = (
+                "<p style=\"margin:8px 0 0;color:#6d4b14;font-size:14px;\">"
+                "Keine freien Termine auslesbar.</p>"
+            )
+        cards.append(
+            f"""
+            <div style="border:1px solid #dbe6d6;border-radius:8px;padding:14px;margin:0 0 12px;background:#fbfdf9;">
+              <div style="font-weight:bold;font-size:16px;">{name}</div>
+              <div style="color:#4b5b4e;font-size:13px;margin-top:2px;">{region}</div>
+              <div style="margin-top:10px;">{slot_buttons}</div>
+            </div>
+            """
+        )
+    return "".join(cards)
+
+
+def _installer_options(planning_context: dict[str, Any]) -> list[dict[str, Any]]:
+    installers = planning_context.get("installers") or []
+    if installers:
+        return [installer for installer in installers if isinstance(installer, dict)]
+    slots = planning_context.get("available_slots") or []
+    if not slots:
+        return []
+    return [
+        {
+            "id": None,
+            "name": "Handwerker",
+            "region": "Standardgebiet",
+            "available_slots": slots,
+        }
+    ]
+
+
+def _slot_label(slot: Any) -> str:
+    if isinstance(slot, dict):
+        return str(slot.get("label") or slot.get("value") or "Termin")
+    return str(slot)
+
+
+def _slot_value(slot: Any) -> str:
+    if isinstance(slot, dict):
+        return str(slot.get("value") or slot.get("start") or slot.get("label") or "")
+    return str(slot)
+
+
+def _confirm_url_for_slot(lead_id: str, installer_id: Any, slot: Any) -> str:
+    params = []
+    if installer_id:
+        params.append(f"installer_id={quote(str(installer_id))}")
+    slot_value = _slot_value(slot)
+    if slot_value:
+        params.append(f"slot={quote(slot_value)}")
+    query = f"?{'&'.join(params)}" if params else ""
+    return f"{settings.public_base_url}/installer/confirm/{lead_id}{query}"
+
+
+def _preferred_slot_tokens(
+    qualification: dict[str, Any],
+    planning_context: dict[str, Any],
+) -> list[str]:
+    raw_values = [
+        qualification.get("preferred_installer_slot"),
+        qualification.get("preferred_installer_slots"),
+        qualification.get("selected_slot"),
+        qualification.get("selected_slot_label"),
+        planning_context.get("preferred_installer_slot"),
+        planning_context.get("preferred_installer_slots"),
+        planning_context.get("selected_slot"),
+        planning_context.get("selected_slot_label"),
+    ]
+    tokens: list[str] = []
+    for value in raw_values:
+        if isinstance(value, list):
+            tokens.extend(str(item).lower() for item in value if item)
+        elif value:
+            tokens.append(str(value).lower())
+    return tokens
+
+
+def _slot_matches_preference(slot: Any, preferred: list[str]) -> bool:
+    if not preferred:
+        return False
+    haystack = f"{_slot_label(slot)} {_slot_value(slot)}".lower()
+    return any(token and token in haystack for token in preferred)
+
+
+def _slot_button_html(
+    lead_id: str,
+    installer_id: Any,
+    slot: Any,
+    preferred: bool,
+) -> str:
+    url = html_lib.escape(_confirm_url_for_slot(lead_id, installer_id, slot))
+    label = html_lib.escape(_slot_label(slot))
+    badge = (
+        "<span style=\"display:inline-block;margin-left:8px;color:#1d6f42;font-size:12px;font-weight:bold;\">im Call besprochen</span>"
+        if preferred
+        else ""
+    )
+    return (
+        f"<div style=\"margin:8px 0;\">"
+        f"<a href=\"{url}\" style=\"display:inline-block;background:#1d6f42;color:#ffffff;text-decoration:none;font-weight:bold;padding:11px 14px;border-radius:6px;\">"
+        f"{label}</a>{badge}</div>"
+    )
 
 
 def _panel_caption(planning_context: dict[str, Any]) -> str:
@@ -260,6 +439,7 @@ def _conversation_summary_html(
     lead_info: list[str],
     panel_caption: str,
     confirm_url: str,
+    appointment_options_html: str,
     planning_lines: list[str],
     next_step_lines: list[str],
     summary: str,
@@ -292,9 +472,12 @@ def _conversation_summary_html(
 
             <p style="margin:0 0 22px;">
               <a href="{esc(confirm_url)}" style="display:inline-block;background:#1d6f42;color:#ffffff;text-decoration:none;font-weight:bold;padding:14px 18px;border-radius:6px;">
-                Besprochenen Handwerker-Termin bestaetigen
+                Ersten passenden Termin bestaetigen
               </a>
             </p>
+
+            <h2 style="font-size:18px;margin:0 0 10px;">Freie Termine aus dem Telefonat auswaehlen</h2>
+            {appointment_options_html}
 
             <h2 style="font-size:18px;margin:0 0 10px;">Agent-2-Plan</h2>
             <ul style="margin:0 0 24px;padding-left:20px;line-height:1.55;">{list_html(planning_lines)}</ul>

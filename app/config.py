@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import json
 from dataclasses import dataclass
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -32,6 +34,7 @@ class Settings:
         "Deepgram",
     )
     google_calendar_id: str = os.getenv("GOOGLE_CALENDAR_ID", "primary")
+    installers_json: str = os.getenv("INSTALLERS_JSON", "")
     google_application_credentials: str | None = (
         os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or None
     )
@@ -77,6 +80,30 @@ class Settings:
             and self.twilio_auth_token
             and self.twilio_from_number
         )
+
+    @property
+    def installers(self) -> list[dict[str, Any]]:
+        if self.installers_json.strip():
+            try:
+                parsed = json.loads(self.installers_json)
+            except json.JSONDecodeError:
+                parsed = []
+            if isinstance(parsed, list):
+                installers = [
+                    item
+                    for item in parsed
+                    if isinstance(item, dict) and item.get("id") and item.get("calendar_id")
+                ]
+                if installers:
+                    return installers
+        return [
+            {
+                "id": "solar_emergies",
+                "name": "Solar Emergies",
+                "calendar_id": self.google_calendar_id,
+                "region": "Standardgebiet",
+            }
+        ]
 
 
 settings = Settings()

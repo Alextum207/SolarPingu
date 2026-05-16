@@ -36,6 +36,7 @@ from app.services import (
     email,
     gemini,
     hub,
+    installers,
     offer,
     offer_pdf,
     profitability,
@@ -962,6 +963,7 @@ def _email_planning_context(stored: dict[str, Any]) -> dict[str, Any]:
         ]
     except Exception:
         slots = []
+    installer_options = installers.installer_slot_options(max_slots_per_installer=3)
     return {
         "lead": stored.get("intake"),
         "solar": stored.get("solar"),
@@ -969,16 +971,22 @@ def _email_planning_context(stored: dict[str, Any]) -> dict[str, Any]:
         "offer": stored.get("offer"),
         "handoff": stored.get("handoff"),
         "available_slots": slots,
+        "installers": installer_options,
     }
 
 
 @app.get("/installer/confirm/{lead_id}", response_class=HTMLResponse)
-def confirm_installer_slot(lead_id: str, slot: str | None = None) -> HTMLResponse:
+def confirm_installer_slot(
+    lead_id: str,
+    slot: str | None = None,
+    installer_id: str | None = None,
+) -> HTMLResponse:
     stored = db.get_agentic_lead(lead_id)
     if stored is None:
         raise HTTPException(status_code=404, detail="Lead not found.")
     lead = SolarLeadIntake.model_validate(stored["intake"])
-    selected = _selected_installer_slot(slot)
+    installer = installers.get_installer(installer_id)
+    selected = _selected_installer_slot(slot, calendar_id=installer["calendar_id"])
     end = selected + timedelta(minutes=calendar.SLOT_MINUTES)
     booking = calendar.book_qualification_call(
         name=lead.name,
@@ -988,12 +996,16 @@ def confirm_installer_slot(lead_id: str, slot: str | None = None) -> HTMLRespons
         message="Finales Vor-Ort-Planungsgespraech mit Handwerker nach Lead-Call.",
         start=selected,
         end=end,
+        calendar_id=installer["calendar_id"],
     )
     voice = stored.get("voice") or {}
     voice["installer_appointment"] = {
         "confirmed": True,
         "start": selected.isoformat(),
         "end": end.isoformat(),
+        "installer_id": installer["id"],
+        "installer_name": installer["name"],
+        "calendar_id": installer["calendar_id"],
         "calendar_event_id": booking.event_id,
         "calendar_link": booking.html_link,
     }
@@ -1006,6 +1018,7 @@ def confirm_installer_slot(lead_id: str, slot: str | None = None) -> HTMLRespons
   <main style="max-width:680px;margin:0 auto;background:white;border:1px solid #dbe6d6;border-radius:8px;padding:24px;">
     <h1 style="margin-top:0;">Handwerker-Termin bestaetigt</h1>
     <p>Der Vor-Ort-Planungstermin fuer <strong>{lead.name}</strong> wurde geblockt.</p>
+    <p><strong>Handwerker:</strong> {installer["name"]}</p>
     <p><strong>Start:</strong> {selected.strftime('%d.%m.%Y %H:%M Uhr')}</p>
     <p><strong>Adresse:</strong> {lead.address}</p>
     <p><strong>Kalender-Event:</strong> {booking.event_id}</p>
@@ -1016,13 +1029,13 @@ def confirm_installer_slot(lead_id: str, slot: str | None = None) -> HTMLRespons
     )
 
 
-def _selected_installer_slot(slot: str | None) -> datetime:
+def _selected_installer_slot(slot: str | None, calendar_id: str | None = None) -> datetime:
     if slot:
         try:
             return datetime.fromisoformat(slot).astimezone(settings.tz)
         except ValueError:
             pass
-    available = calendar.get_available_slots(max_slots=1)
+    available = calendar.get_available_slots(max_slots=1, calendar_id=calendar_id)
     if available:
         return available[0].start
     return datetime.now(settings.tz) + timedelta(hours=2)

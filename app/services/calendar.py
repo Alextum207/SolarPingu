@@ -43,14 +43,18 @@ def _event_bounds(event: dict[str, Any]) -> tuple[datetime, datetime] | None:
     return (datetime.fromisoformat(start_raw.replace("Z", "+00:00")), datetime.fromisoformat(end_raw.replace("Z", "+00:00")))
 
 
-def _busy_events(start: datetime, end: datetime) -> list[tuple[datetime, datetime]]:
+def _busy_events(
+    start: datetime,
+    end: datetime,
+    calendar_id: str | None = None,
+) -> list[tuple[datetime, datetime]]:
     service = _google_service()
     if service is None:
         return []
     response = (
         service.events()
         .list(
-            calendarId=settings.google_calendar_id,
+            calendarId=calendar_id or settings.google_calendar_id,
             timeMin=start.isoformat(),
             timeMax=end.isoformat(),
             singleEvents=True,
@@ -70,11 +74,11 @@ def _slot_label(start: datetime) -> str:
     return start.strftime("%a, %d.%m. %H:%M Uhr")
 
 
-def get_available_slots(max_slots: int = 24) -> list[Slot]:
+def get_available_slots(max_slots: int = 24, calendar_id: str | None = None) -> list[Slot]:
     now = datetime.now(settings.tz)
     window_start = now
     window_end = now + timedelta(days=LOOKAHEAD_DAYS)
-    busy = _busy_events(window_start, window_end)
+    busy = _busy_events(window_start, window_end, calendar_id=calendar_id)
     slots: list[Slot] = []
 
     for offset in range(LOOKAHEAD_DAYS):
@@ -102,9 +106,16 @@ def get_available_slots(max_slots: int = 24) -> list[Slot]:
     return slots
 
 
-def is_slot_available(start: datetime) -> bool:
+def is_slot_available(start: datetime, calendar_id: str | None = None) -> bool:
     candidate = start.astimezone(settings.tz)
-    return any(slot.start == candidate for slot in get_available_slots(max_slots=300))
+    try:
+        slots = get_available_slots(max_slots=300, calendar_id=calendar_id)
+    except TypeError:
+        slots = get_available_slots(max_slots=300)
+    return any(
+        slot.start == candidate
+        for slot in slots
+    )
 
 
 def book_qualification_call(
@@ -116,6 +127,7 @@ def book_qualification_call(
     message: str,
     start: datetime,
     end: datetime,
+    calendar_id: str | None = None,
 ) -> CalendarBooking:
     service = _google_service()
     if service is None:
@@ -133,7 +145,7 @@ def book_qualification_call(
     created = (
         service.events()
         .insert(
-            calendarId=settings.google_calendar_id,
+            calendarId=calendar_id or settings.google_calendar_id,
             body=event,
         )
         .execute()
