@@ -77,6 +77,9 @@ def _local_fallback_response(
     if german:
         if wants_repeat and len(state.get("turns", [])) <= 2:
             return "Ja, ich hoere Sie. Ich habe Ihre Anfrage vor mir und gehe gern konkret auf Ihre Solarfrage ein."
+        playbook_response = _objection_playbook_response(current, business_case or {})
+        if playbook_response:
+            return playbook_response
         if has_concern and ev_concern and annual_km is None:
             return (
                 "Ja, beim E-Auto entscheidet vor allem Ihre Fahrleistung und wann Sie laden. "
@@ -332,7 +335,10 @@ async def _gemini_call_response(
         "the concern is acknowledged and roughly quantified, position the on-site meeting "
         "as validation of the calculation and final planning. Use conversation_so_far as "
         "memory; never ask for the same concern again after the customer has stated it. "
-        "Ask one concise question at a time. Keep responses under 65 words."
+        "Use objection_playbook when it matches. Insert the actual numbers and end with a "
+        "small check question like 'Ist genau das Ihre Hauptsorge?' or 'Soll ich die Annahme "
+        "kurz genauer aufdroeseln?' It is better to ask once more than to close too early. "
+        "Ask one concise question at a time. Keep responses under 80 words."
     )
     customer_text = _normalize_for_matching(
         " ".join(
@@ -347,6 +353,7 @@ async def _gemini_call_response(
         "profitability": stored.get("profitability"),
         "offer": stored.get("offer"),
         "business_case": business_case,
+        "objection_playbook": _objection_playbook(business_case),
         "agent2_plan": _planning_context(stored),
         "conversation_so_far": state["turns"][-8:],
         "known_qualification": _qualification_flags(customer_text),
@@ -512,6 +519,15 @@ def _business_case_context(stored: dict[str, Any], lead: SolarLeadIntake) -> dic
     price_min = price_range.get("min") or profitability.get("estimated_price_min")
     price_max = price_range.get("max") or profitability.get("estimated_price_max")
     payback = profitability.get("payback_years")
+    lead_score = profitability.get("score")
+    modules = offer.get("modules") or offer.get("module_count")
+    if modules is None and kwp:
+        modules = max(1, round(float(kwp) / 0.4))
+    ghosting_risk = stored.get("ghosting_risk")
+    if ghosting_risk is None:
+        ghosting_risk = (stored.get("handoff") or {}).get("ghosting_risk")
+    if ghosting_risk is None and lead_score is not None:
+        ghosting_risk = max(0, min(100, 100 - int(lead_score)))
     estimated_yearly_value = None
     if yearly_kwh:
         self_consumption_rate = 0.65 if lead.battery_interest else 0.45
@@ -527,6 +543,9 @@ def _business_case_context(stored: dict[str, Any], lead: SolarLeadIntake) -> dic
         "price_min_eur": price_min,
         "price_max_eur": price_max,
         "payback_years": payback,
+        "lead_score": lead_score,
+        "module_count": modules,
+        "ghosting_risk": ghosting_risk,
         "estimated_yearly_value_eur": estimated_yearly_value,
         "includes_battery": offer.get("includes_battery") or lead.battery_interest,
         "ev_or_wallbox_interest": lead.wallbox_interest,
@@ -565,6 +584,96 @@ def _spoken_business_case(business_case: dict[str, Any]) -> str:
     return "; ".join(parts) + "."
 
 
+def _objection_playbook(business_case: dict[str, Any]) -> dict[str, str]:
+    values = _playbook_values(business_case)
+    return {
+        "too_expensive": (
+            f"Ja, die Investition liegt voraussichtlich zwischen {values['price_min']} Euro "
+            f"und {values['price_max']} Euro. Aber das ist kein verlorenes Geld, sondern "
+            f"eine Investition, die sich durch die jaehrliche Ersparnis von {values['yearly_saving']} "
+            "Euro Schritt fuer Schritt selbst abbezahlt."
+        ),
+        "payback": (
+            f"Ihre Anlage hat eine Amortisationszeit von grob {values['payback']} Jahren. "
+            "Moderne Module halten typischerweise 25 bis 30 Jahre; danach produziert die Anlage "
+            "noch viele Jahre sehr guenstigen Strom."
+        ),
+        "roof_quality": (
+            f"Unser System bewertet Ihr Projekt mit einem Lead-Score von {values['lead_score']} Prozent. "
+            "Das spricht dafuer, dass Dach und Gegebenheiten grundsaetzlich sehr gut zu Photovoltaik passen."
+        ),
+        "production": (
+            f"Mit einer Anlagengroesse von {values['kwp']} kWp erzeugen Sie voraussichtlich "
+            f"{values['yearly_kwh']} kWh im Jahr. Ein typisches Einfamilienhaus liegt grob bei "
+            "4.000 kWh, also haben Sie Puffer fuer Zukunftsthemen wie Waermepumpe oder E-Auto."
+        ),
+        "roof_space": (
+            f"Fuer diese Leistung rechnen wir grob mit {values['modules']} Modulen. "
+            "Basierend auf den Dachdaten nutzt das die verfuegbare Flaeche sinnvoll aus."
+        ),
+        "energy_prices": (
+            f"Die errechnete Ersparnis von {values['yearly_saving']} Euro pro Jahr basiert auf "
+            "konservativen Annahmen. Selbst wenn Strompreise schwanken, schuetzt eigener Solarstrom "
+            "langfristig vor steigenden Energiekosten."
+        ),
+        "hesitation": (
+            f"Die Zahlen sprechen wirtschaftlich fuer das Projekt; das Ghosting-Risiko liegt intern "
+            f"bei etwa {values['ghosting_risk']} Prozent. Ich wuerde Ihnen die wichtigsten Punkte "
+            "gern nochmal knapp zusammenfassen, bevor wir ueber den naechsten Schritt sprechen."
+        ),
+        "hidden_costs": (
+            f"Der geschaetzte Preis liegt zwischen {values['price_min']} Euro und {values['price_max']} Euro. "
+            "Diese Spanne ist bewusst als Korridor gedacht und puffert typische Punkte wie Geruest, "
+            "Zaehlerschrank oder Montage-Details bereits eher mit ab."
+        ),
+        "resale": (
+            f"Eine Anlage, die jaehrlich grob {values['yearly_saving']} Euro Energiekosten spart, "
+            "kann den Wert der Immobilie staerken. Fuer Kaeufer ist ein Haus mit niedrigeren "
+            "Nebenkosten ein sehr konkretes Argument."
+        ),
+    }
+
+
+def _objection_playbook_response(current: str, business_case: dict[str, Any]) -> str | None:
+    playbook = _objection_playbook(business_case)
+    response: str | None = None
+    if any(word in current for word in ["zu teuer", "leisten", "anschaffung", "kosten zu hoch"]):
+        response = playbook["too_expensive"]
+    elif any(word in current for word in ["amortisiert", "amortisation", "20 jahr", "geld wieder"]):
+        response = playbook["payback"]
+    elif any(word in current for word in ["passt", "zu klein", "module", "platz", "riesig", "sperrig"]):
+        response = playbook["roof_space"]
+    elif any(word in current for word in ["mein dach", "dach uberhaupt", "geeignet", "dimensionierung"]):
+        response = playbook["roof_quality"]
+    elif any(word in current for word in ["genug strom", "haushalt", "netzstrom", "erzeugt"]):
+        response = playbook["production"]
+    elif any(word in current for word in ["strompreise sinken", "strompreis sinkt", "schongerechnet", "schoengerechnet"]):
+        response = playbook["energy_prices"]
+    elif any(word in current for word in ["bedenkzeit", "unsicher", "uberlegen", "ueberlegen", "weiss nicht", "weiß nicht"]):
+        response = playbook["hesitation"]
+    elif any(word in current for word in ["alles drin", "versteckte kosten", "wechselrichter", "montage", "gerust", "geruest"]):
+        response = playbook["hidden_costs"]
+    elif any(word in current for word in ["haus verkaufe", "verkaufen", "umziehe", "umziehen"]):
+        response = playbook["resale"]
+    if response is None:
+        return None
+    return f"{response} Ist genau das gerade Ihre Hauptsorge, oder soll ich eine Annahme genauer aufdroeseln?"
+
+
+def _playbook_values(business_case: dict[str, Any]) -> dict[str, str]:
+    return {
+        "price_min": _format_de_int(business_case.get("price_min_eur") or 0),
+        "price_max": _format_de_int(business_case.get("price_max_eur") or 0),
+        "yearly_saving": _format_de_int(business_case.get("estimated_yearly_value_eur") or 0),
+        "payback": _format_de_float(business_case.get("payback_years") or 0),
+        "lead_score": _format_de_int(business_case.get("lead_score") or 0),
+        "kwp": _format_de_float(business_case.get("system_size_kwp") or 0),
+        "yearly_kwh": _format_de_int(business_case.get("yearly_energy_kwh") or 0),
+        "modules": _format_de_int(business_case.get("module_count") or 0),
+        "ghosting_risk": _format_de_int(business_case.get("ghosting_risk") or 0),
+    }
+
+
 def _spoken_ev_savings(
     business_case: dict[str, Any],
     annual_km: int,
@@ -596,6 +705,13 @@ def _spoken_ev_savings(
 
 def _format_de_int(value: Any) -> str:
     return f"{int(value):,}".replace(",", ".")
+
+
+def _format_de_float(value: Any) -> str:
+    number = float(value)
+    if number.is_integer():
+        return str(int(number))
+    return f"{number:.1f}".replace(".", ",")
 
 
 def _planning_context(stored: dict[str, Any]) -> dict[str, Any]:

@@ -720,6 +720,7 @@ def test_twilio_conversation_relay_websocket_uses_gemini(monkeypatch, tmp_path) 
                 }
             },
             profitability={
+                "score": 96,
                 "estimated_kwp": 11.6,
                 "estimated_price_min": 23320,
                 "estimated_price_max": 27517,
@@ -728,6 +729,7 @@ def test_twilio_conversation_relay_websocket_uses_gemini(monkeypatch, tmp_path) 
             offer={
                 "system_size_kwp": 11.6,
                 "includes_battery": True,
+                "module_count": 29,
                 "price_range": {"min": 23320, "max": 27517, "currency": "EUR"},
             },
         )
@@ -760,6 +762,8 @@ def test_twilio_conversation_relay_websocket_uses_gemini(monkeypatch, tmp_path) 
     assert "never ask for the same concern again" in calls[0]["system_prompt"]
     assert "how many kilometers they drive per year" in calls[0]["system_prompt"]
     assert calls[0]["payload"]["business_case"]["ev_assumptions"]["ev_kwh_per_100km"] == 18
+    assert "objection_playbook" in calls[0]["payload"]
+    assert calls[0]["payload"]["business_case"]["module_count"] == 29
 
 
 def test_twilio_fallback_asks_for_ev_mileage_before_concluding() -> None:
@@ -798,6 +802,54 @@ def test_twilio_fallback_calculates_ev_savings_with_mileage() -> None:
     assert "15.000 Kilometern" in response
     assert "7 Euro pro 100 Kilometer" in response
     assert "1.080 Euro pro Jahr" in response
+
+
+def test_twilio_fallback_uses_price_objection_playbook() -> None:
+    response = twilio_bridge._local_fallback_response(
+        {"turns": [{"role": "customer", "text": "Das ist mir zu teuer."}]},
+        "Das ist mir zu teuer.",
+        "de-DE",
+        {
+            "price_min_eur": 23320,
+            "price_max_eur": 27517,
+            "estimated_yearly_value_eur": 2015,
+        },
+    )
+
+    assert "23.320 Euro" in response
+    assert "27.517 Euro" in response
+    assert "2.015 Euro" in response
+    assert "Hauptsorge" in response
+
+
+def test_twilio_fallback_uses_production_objection_playbook() -> None:
+    response = twilio_bridge._local_fallback_response(
+        {"turns": [{"role": "customer", "text": "Erzeugt die Anlage genug Strom fuer meinen Haushalt?"}]},
+        "Erzeugt die Anlage genug Strom fuer meinen Haushalt?",
+        "de-DE",
+        {
+            "system_size_kwp": 11.6,
+            "yearly_energy_kwh": 8541,
+        },
+    )
+
+    assert "11,6 kWp" in response
+    assert "8.541 kWh" in response
+    assert "4.000 kWh" in response
+
+
+def test_twilio_fallback_uses_roof_space_objection_playbook() -> None:
+    response = twilio_bridge._local_fallback_response(
+        {"turns": [{"role": "customer", "text": "Passt das alles auf mein Dach oder ist das zu klein?"}]},
+        "Passt das alles auf mein Dach oder ist das zu klein?",
+        "de-DE",
+        {
+            "module_count": 29,
+        },
+    )
+
+    assert "29 Modulen" in response
+    assert "Flaeche" in response
 
 
 def test_gemini_text_returns_fallback_on_rate_limit(monkeypatch) -> None:
