@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta
 
 import httpx
@@ -11,6 +12,7 @@ from app.config import settings
 from app.main import app
 from app.models import Slot
 from app.services import calendar, email, speechmatics, twilio_bridge, vapi
+from app.services.twilio_bridge import create_customer_call as real_twilio_create_customer_call
 from app.services import gemini
 
 
@@ -635,6 +637,56 @@ def test_twilio_twiml_connects_conversation_relay(monkeypatch, tmp_path) -> None
     assert 'url="wss://agent1.example.com/ws/twilio/conversation/' in response.text
     assert 'code="multi"' in response.text
     assert "Vapi" not in response.text
+
+
+def test_twilio_customer_call_posts_async_form_payload(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "twilio_account_sid", "AC_TEST")
+    monkeypatch.setattr(settings, "twilio_auth_token", "token_test")
+    monkeypatch.setattr(settings, "twilio_from_number", "+12762431540")
+    monkeypatch.setattr(settings, "twilio_call_url", "https://api.twilio.test/2010-04-01")
+    monkeypatch.setattr(settings, "public_base_url", "https://agent1.example.com")
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        status_code = 201
+        text = ""
+
+        def json(self) -> dict[str, str]:
+            return {"sid": "CA_TEST", "status": "queued"}
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            return None
+
+        async def post(self, url, *, data=None, auth=None):
+            captured["url"] = url
+            captured["data"] = data
+            captured["auth"] = auth
+            return FakeResponse()
+
+    monkeypatch.setattr(twilio_bridge.httpx, "AsyncClient", FakeAsyncClient)
+
+    result = asyncio.run(
+        real_twilio_create_customer_call(
+            lead_id="SL-TEST",
+            customer_number="+4917662355154",
+        )
+    )
+
+    assert result == {"sid": "CA_TEST", "status": "queued"}
+    assert captured["url"] == "https://api.twilio.test/2010-04-01/Accounts/AC_TEST/Calls.json"
+    assert captured["auth"] == ("AC_TEST", "token_test")
+    assert ("Url", "https://agent1.example.com/webhooks/twilio/voice/SL-TEST") in captured["data"]
+    assert (
+        "RecordingStatusCallback",
+        "https://agent1.example.com/webhooks/twilio/recording/SL-TEST",
+    ) in captured["data"]
 
 
 def test_twilio_conversation_relay_websocket_uses_gemini(monkeypatch, tmp_path) -> None:
