@@ -699,13 +699,38 @@ def test_twilio_conversation_relay_websocket_uses_gemini(monkeypatch, tmp_path) 
 
     async def fake_generate_text(**kwargs):
         calls.append(kwargs)
-        return "Ja, gerne. Sind Sie Eigentuemer der Immobilie?"
+        return (
+            "Bei Ihrer groben Planung sprechen wir ueber rund 11 kWp und eine "
+            "Amortisation um 10 Jahre. Beim E-Auto lohnt es sich besonders, wenn "
+            "Sie viel mit eigenem Solarstrom laden."
+        )
 
     monkeypatch.setattr("app.services.twilio_bridge.gemini.generate_text", fake_generate_text)
 
     with TestClient(app) as client:
         lead = client.post("/api/intake", json=_pursue_payload()).json()
         lead_id = lead["lead_id"]
+        db.update_agentic_artifacts(
+            lead_id,
+            status="call_scheduled",
+            solar={
+                "solar_potential": {
+                    "estimated_kwp": 11.6,
+                    "yearly_energy_kwh": 8541,
+                }
+            },
+            profitability={
+                "estimated_kwp": 11.6,
+                "estimated_price_min": 23320,
+                "estimated_price_max": 27517,
+                "payback_years": 9.6,
+            },
+            offer={
+                "system_size_kwp": 11.6,
+                "includes_battery": True,
+                "price_range": {"min": 23320, "max": 27517, "currency": "EUR"},
+            },
+        )
         with client.websocket_connect(f"/ws/twilio/conversation/{lead_id}") as websocket:
             websocket.send_json(
                 {
@@ -718,7 +743,7 @@ def test_twilio_conversation_relay_websocket_uses_gemini(monkeypatch, tmp_path) 
             websocket.send_json(
                 {
                     "type": "prompt",
-                    "voicePrompt": "Ich interessiere mich fuer Solar.",
+                    "voicePrompt": "Ich habe ein E-Auto und Sorge, ob sich Speicher und Solar wirklich lohnen.",
                     "lang": "de-DE",
                     "last": True,
                 }
@@ -726,9 +751,13 @@ def test_twilio_conversation_relay_websocket_uses_gemini(monkeypatch, tmp_path) 
             response = websocket.receive_json()
 
     assert response["type"] == "text"
-    assert response["token"].startswith("Ja, gerne")
+    assert response["token"].startswith("Bei Ihrer groben Planung")
     assert "lang" not in response
     assert calls[0]["payload"]["detected_language"] == "de-DE"
+    assert calls[0]["payload"]["business_case"]["system_size_kwp"]
+    assert calls[0]["payload"]["business_case"]["payback_years"]
+    assert "Do not jump straight to an installer appointment" in calls[0]["system_prompt"]
+    assert "never ask for the same concern again" in calls[0]["system_prompt"]
 
 
 def test_gemini_text_returns_fallback_on_rate_limit(monkeypatch) -> None:

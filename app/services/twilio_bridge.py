@@ -33,7 +33,12 @@ def _public_http_url(path: str) -> str:
     return f"{settings.public_base_url.rstrip('/')}{path}"
 
 
-def _local_fallback_response(state: dict[str, Any], prompt: str, lang: str) -> str:
+def _local_fallback_response(
+    state: dict[str, Any],
+    prompt: str,
+    lang: str,
+    business_case: dict[str, Any] | None = None,
+) -> str:
     text = _normalize_for_matching(
         " ".join(
             turn["text"]
@@ -47,12 +52,34 @@ def _local_fallback_response(state: dict[str, Any], prompt: str, lang: str) -> s
         word in text for word in ["ich", "bin", "eigentumer", "dach", "umsetzung"]
     )
     wants_repeat = any(word in current for word in ["horst", "hear me", "hallo"])
+    concern_words = [
+        "sorge",
+        "angst",
+        "unsicher",
+        "teuer",
+        "lohnt",
+        "lohnt sich",
+        "rentiert",
+        "finanzierung",
+        "speicher",
+        "e-auto",
+        "auto",
+        "wallbox",
+        "laden",
+        "kosten",
+    ]
+    has_concern = any(word in current for word in concern_words)
+    rough_case = _spoken_business_case(business_case or {})
 
     if german:
         if wants_repeat and len(state.get("turns", [])) <= 2:
-            return "Ja, ich hoere Sie. Ich stelle nur ein paar kurze Fragen zu Ihrem Solarprojekt."
-        if any(word in current for word in ["sorge", "angst", "unsicher", "teuer", "lohnt", "finanzierung"]):
-            return "Verstehe ich gut. Genau deshalb macht der Vor-Ort-Termin Sinn: Dort pruefen wir Dach, Verbrauch und Speicher sauber. Wenn das fuer Sie passt, wuerde ich gern einen Handwerker-Termin festmachen."
+            return "Ja, ich hoere Sie. Ich habe Ihre Anfrage vor mir und gehe gern konkret auf Ihre Solarfrage ein."
+        if has_concern:
+            return (
+                f"Ja, genau diese Rentabilitaetsfrage ist wichtig. {rough_case} "
+                "Beim E-Auto wird es besonders interessant, wenn Sie viel tagsueber oder mit Speicher laden. "
+                "Der Termin ist dann nicht der Start, sondern die Absicherung dieser Rechnung."
+            )
         if facts["owner"] and facts["timeline"] and not facts["budget"]:
             return "Das passt grundsaetzlich gut. Was waere fuer Sie die groesste Sorge, bevor Sie einen Vor-Ort-Planungstermin zusagen?"
         if facts["owner"] and facts["timeline"] and facts["budget"] and not facts["roof"]:
@@ -63,10 +90,19 @@ def _local_fallback_response(state: dict[str, Any], prompt: str, lang: str) -> s
             return "Danke, die Basis ist klar. Was muesste fuer Sie geklaert sein, damit Sie einem Vor-Ort-Termin zustimmen?"
         if facts["timeline"] and not facts["owner"]:
             return "Den Zeitraum habe ich aus dem Formular. Was ist fuer Sie aktuell die groesste Frage oder Sorge bei Solar?"
-        return "Danke. Damit ich Ihnen wirklich helfen kann: Was ist gerade Ihre groesste Sorge, bevor wir einen Vor-Ort-Termin mit dem Handwerker vereinbaren?"
+        return (
+            f"Ich ordne es kurz ein: {rough_case} "
+            "Welche Annahme ist fuer Sie am wichtigsten zu klaeren: Speicher, Autoladen oder Gesamtpreis?"
+        )
 
     if facts["owner"] and facts["timeline"] and not facts["budget"]:
         return "That sounds like a good basis. What is your biggest concern before agreeing to an in-person planning appointment?"
+    if has_concern:
+        return (
+            f"That return question is exactly the right one. {rough_case} "
+            "For an EV, it becomes strongest when charging overlaps with solar production or a battery. "
+            "The installer visit should validate the numbers, not replace the explanation."
+        )
     if facts["owner"] and facts["timeline"] and facts["budget"] and not facts["roof"]:
         return "That is enough for the next step. I would suggest an in-person installer planning appointment. Should I reserve one of the next available slots?"
     if facts["owner"] and facts["timeline"] and facts["budget"] and facts["roof"]:
@@ -251,7 +287,8 @@ async def _gemini_call_response(
     prompt: str,
     lang: str,
 ) -> str:
-    fallback = _local_fallback_response(state, prompt, lang)
+    business_case = _business_case_context(stored, lead)
+    fallback = _local_fallback_response(state, prompt, lang, business_case)
     system_prompt = (
         "You are SolarPingu's multilingual closing advisor. Gemini is the reasoning engine. "
         "Mirror the customer's language exactly; if they speak German, answer in German; "
@@ -259,10 +296,15 @@ async def _gemini_call_response(
         "Do not mention PDFs, internal demos, Vapi, Twilio, or technical systems. "
         "The form already collected ownership, roof, need, timeline, budget, decision maker, "
         "and main concern. Do not run a technical checklist and do not re-qualify the lead. "
-        "Your goal is to understand the lead's real needs and worries, reduce objections in "
-        "plain human language, and close the next step: a final in-person planning meeting "
-        "with an installer using one of the available slots. Use conversation_so_far as "
-        "memory. Ask one concise question at a time. Keep responses under 45 words."
+        "Your first goal is to resolve the customer's concern in plain human language. "
+        "When they ask if it is worth it, mention 1-2 rough numbers from business_case "
+        "such as system size, yearly kWh, price range, yearly value, or payback. Explain "
+        "what that means for their specific worry, for example EV charging, battery value, "
+        "financing, or risk. Do not jump straight to an installer appointment. Only after "
+        "the concern is acknowledged and roughly quantified, position the on-site meeting "
+        "as validation of the calculation and final planning. Use conversation_so_far as "
+        "memory; never ask for the same concern again after the customer has stated it. "
+        "Ask one concise question at a time. Keep responses under 65 words."
     )
     customer_text = _normalize_for_matching(
         " ".join(
@@ -276,6 +318,7 @@ async def _gemini_call_response(
         "solar": stored.get("solar"),
         "profitability": stored.get("profitability"),
         "offer": stored.get("offer"),
+        "business_case": business_case,
         "agent2_plan": _planning_context(stored),
         "conversation_so_far": state["turns"][-8:],
         "known_qualification": _qualification_flags(customer_text),
@@ -389,6 +432,68 @@ async def download_recording_audio(
         "content_type": content_type,
         "media_url": media_url,
     }
+
+
+def _business_case_context(stored: dict[str, Any], lead: SolarLeadIntake) -> dict[str, Any]:
+    solar = stored.get("solar") or {}
+    potential = solar.get("solar_potential") or {}
+    profitability = stored.get("profitability") or {}
+    offer = stored.get("offer") or {}
+    price_range = offer.get("price_range") or {}
+    kwp = (
+        offer.get("system_size_kwp")
+        or profitability.get("estimated_kwp")
+        or potential.get("estimated_kwp")
+    )
+    yearly_kwh = potential.get("yearly_energy_kwh")
+    price_min = price_range.get("min") or profitability.get("estimated_price_min")
+    price_max = price_range.get("max") or profitability.get("estimated_price_max")
+    payback = profitability.get("payback_years")
+    estimated_yearly_value = None
+    if yearly_kwh:
+        self_consumption_rate = 0.65 if lead.battery_interest else 0.45
+        avoided_grid_price = 0.32
+        export_price = 0.08
+        estimated_yearly_value = int(
+            yearly_kwh * self_consumption_rate * avoided_grid_price
+            + yearly_kwh * (1 - self_consumption_rate) * export_price
+        )
+    return {
+        "system_size_kwp": kwp,
+        "yearly_energy_kwh": yearly_kwh,
+        "price_min_eur": price_min,
+        "price_max_eur": price_max,
+        "payback_years": payback,
+        "estimated_yearly_value_eur": estimated_yearly_value,
+        "includes_battery": offer.get("includes_battery") or lead.battery_interest,
+        "ev_or_wallbox_interest": lead.wallbox_interest,
+        "main_concern": lead.main_concern,
+        "assumptions": [
+            "Rough phone estimate only; roof, shade, meter cabinet and load profile need installer validation.",
+            "EV value depends on charging times, wallbox behavior and battery sizing.",
+        ],
+    }
+
+
+def _spoken_business_case(business_case: dict[str, Any]) -> str:
+    kwp = business_case.get("system_size_kwp")
+    yearly_kwh = business_case.get("yearly_energy_kwh")
+    price_min = business_case.get("price_min_eur")
+    price_max = business_case.get("price_max_eur")
+    payback = business_case.get("payback_years")
+    yearly_value = business_case.get("estimated_yearly_value_eur")
+    parts = []
+    if kwp and yearly_kwh:
+        parts.append(f"grob sehen wir etwa {kwp:g} kWp und rund {int(yearly_kwh):,} kWh pro Jahr".replace(",", "."))
+    if price_min and price_max:
+        parts.append(f"eine Investition um {int(price_min):,} bis {int(price_max):,} Euro".replace(",", "."))
+    if yearly_value:
+        parts.append(f"grob {int(yearly_value):,} Euro Jahreswert bei gutem Eigenverbrauch".replace(",", "."))
+    if payback:
+        parts.append(f"Amortisation grob um {float(payback):g} Jahre")
+    if not parts:
+        return "Die Wirtschaftlichkeit haengt vor allem an Eigenverbrauch, Dachflaeche, Speichergroesse und Strompreis."
+    return "; ".join(parts) + "."
 
 
 def _planning_context(stored: dict[str, Any]) -> dict[str, Any]:
