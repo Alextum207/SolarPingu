@@ -73,10 +73,16 @@ def _local_fallback_response(
     ev_concern = _has_ev_concern(current) or _has_ev_concern(text)
     annual_km = _extract_annual_km(text)
     rough_case = _spoken_business_case(business_case or {})
+    opening_prompt = _is_opening_prompt(current)
 
     if german:
         if wants_repeat and len(state.get("turns", [])) <= 2:
             return "Ja, ich hoere Sie. Ich habe Ihre Anfrage vor mir und gehe gern konkret auf Ihre Solarfrage ein."
+        if opening_prompt:
+            return (
+                "Ja, sehr gern. Bevor ich mit Zahlen anfange: Was ist bei Ihnen gerade "
+                "die groesste Frage oder Sorge zu Solar?"
+            )
         if ev_concern and annual_km is not None:
             return (
                 f"{_spoken_ev_savings(business_case or {}, annual_km, german=True)} "
@@ -108,11 +114,10 @@ def _local_fallback_response(
             return "Danke, die Basis ist klar. Was muesste fuer Sie geklaert sein, damit Sie einem Vor-Ort-Termin zustimmen?"
         if facts["timeline"] and not facts["owner"]:
             return "Den Zeitraum habe ich aus dem Formular. Was ist fuer Sie aktuell die groesste Frage oder Sorge bei Solar?"
-        return (
-            f"Ich ordne es kurz ein: {rough_case} "
-            "Welche Annahme ist fuer Sie am wichtigsten zu klaeren: Speicher, Autoladen oder Gesamtpreis?"
-        )
+        return "Was ist bei Ihnen gerade die groesste Frage oder Sorge: Gesamtpreis, Speicher, Autoladen oder ob das Dach genug bringt?"
 
+    if opening_prompt:
+        return "Absolutely. Before I start with numbers: what is your biggest question or concern about solar right now?"
     if facts["owner"] and facts["timeline"] and not facts["budget"]:
         return "That sounds like a good basis. What is your biggest concern before agreeing to an in-person planning appointment?"
     if ev_concern and annual_km is not None:
@@ -325,6 +330,9 @@ async def _gemini_call_response(
         "The form already collected ownership, roof, need, timeline, budget, decision maker, "
         "and main concern. Do not run a technical checklist and do not re-qualify the lead. "
         "Your first goal is to resolve the customer's concern in plain human language. "
+        "At the very beginning, when the customer only says they are ready or you can start, "
+        "do not recite system size, yearly kWh, savings, payback, prices, or any other numbers. "
+        "First ask what their biggest concern or question is. "
         "When they ask if it is worth it, mention 1-2 rough numbers from business_case "
         "such as system size, yearly kWh, price range, yearly value, or payback. Explain "
         "what that means for their specific worry, for example EV charging, battery value, "
@@ -338,6 +346,9 @@ async def _gemini_call_response(
         "Use objection_playbook when it matches. Insert the actual numbers and end with a "
         "small check question like 'Ist genau das Ihre Hauptsorge?' or 'Soll ich die Annahme "
         "kurz genauer aufdroeseln?' It is better to ask once more than to close too early. "
+        "For phone audio, avoid dense written numbers like 10.672 kWh or 23.320 Euro. Prefer "
+        "spoken approximate wording from business_case.spoken, for example 'rund 8 tausend "
+        "500 Kilowattstunden' or '23 tausend bis 27 tausend Euro'. "
         "Ask one concise question at a time. Keep responses under 80 words."
     )
     customer_text = _normalize_for_matching(
@@ -488,6 +499,22 @@ def _has_ev_concern(text: str) -> bool:
     )
 
 
+def _is_opening_prompt(text: str) -> bool:
+    return any(
+        phrase in text
+        for phrase in [
+            "wir konnen anfangen",
+            "wir koennen anfangen",
+            "ich bin bereit",
+            "du bereit bist",
+            "kann losgehen",
+            "leg los",
+            "fangen wir an",
+            "starten",
+        ]
+    )
+
+
 def _extract_annual_km(text: str) -> int | None:
     patterns = [
         r"(\d{1,3}(?:[.\s]\d{3})+|\d{4,6})\s*(?:km|kilometer)",
@@ -597,25 +624,44 @@ def _business_case_context(stored: dict[str, Any], lead: SolarLeadIntake) -> dic
             "Rough phone estimate only; roof, shade, meter cabinet and load profile need installer validation.",
             "EV value depends on charging times, wallbox behavior and battery sizing.",
         ],
+        "spoken": _spoken_value_context(
+            kwp=kwp,
+            yearly_kwh=yearly_kwh,
+            price_min=price_min,
+            price_max=price_max,
+            payback=payback,
+            yearly_value=estimated_yearly_value,
+            modules=modules,
+            lead_score=lead_score,
+            ghosting_risk=ghosting_risk,
+        ),
     }
 
 
 def _spoken_business_case(business_case: dict[str, Any]) -> str:
-    kwp = business_case.get("system_size_kwp")
-    yearly_kwh = business_case.get("yearly_energy_kwh")
-    price_min = business_case.get("price_min_eur")
-    price_max = business_case.get("price_max_eur")
-    payback = business_case.get("payback_years")
-    yearly_value = business_case.get("estimated_yearly_value_eur")
+    spoken = business_case.get("spoken") or _spoken_value_context(
+        kwp=business_case.get("system_size_kwp"),
+        yearly_kwh=business_case.get("yearly_energy_kwh"),
+        price_min=business_case.get("price_min_eur"),
+        price_max=business_case.get("price_max_eur"),
+        payback=business_case.get("payback_years"),
+        yearly_value=business_case.get("estimated_yearly_value_eur"),
+        modules=business_case.get("module_count"),
+        lead_score=business_case.get("lead_score"),
+        ghosting_risk=business_case.get("ghosting_risk"),
+    )
     parts = []
-    if kwp and yearly_kwh:
-        parts.append(f"grob sehen wir etwa {kwp:g} kWp und rund {_format_de_int(yearly_kwh)} kWh pro Jahr")
-    if price_min and price_max:
-        parts.append(f"eine Investition um {_format_de_int(price_min)} bis {_format_de_int(price_max)} Euro")
-    if yearly_value:
-        parts.append(f"grob {_format_de_int(yearly_value)} Euro Jahreswert bei gutem Eigenverbrauch")
-    if payback:
-        parts.append(f"Amortisation grob um {float(payback):g} Jahre")
+    if spoken.get("kwp") and spoken.get("yearly_kwh"):
+        parts.append(
+            f"grob sehen wir etwa {spoken['kwp']} Kilowatt Peak und rund "
+            f"{spoken['yearly_kwh']} Kilowattstunden pro Jahr"
+        )
+    if spoken.get("price_min") and spoken.get("price_max"):
+        parts.append(f"eine Investition um {spoken['price_min']} bis {spoken['price_max']} Euro")
+    if spoken.get("yearly_saving"):
+        parts.append(f"grob {spoken['yearly_saving']} Euro Jahreswert bei gutem Eigenverbrauch")
+    if spoken.get("payback"):
+        parts.append(f"Amortisation grob um {spoken['payback']} Jahre")
     if not parts:
         return "Die Wirtschaftlichkeit haengt vor allem an Eigenverbrauch, Dachflaeche, Speichergroesse und Strompreis."
     return "; ".join(parts) + "."
@@ -640,9 +686,9 @@ def _objection_playbook(business_case: dict[str, Any]) -> dict[str, str]:
             "Das spricht dafuer, dass Dach und Gegebenheiten grundsaetzlich sehr gut zu Photovoltaik passen."
         ),
         "production": (
-            f"Mit einer Anlagengroesse von {values['kwp']} kWp erzeugen Sie voraussichtlich "
-            f"{values['yearly_kwh']} kWh im Jahr. Ein typisches Einfamilienhaus liegt grob bei "
-            "4.000 kWh, also haben Sie Puffer fuer Zukunftsthemen wie Waermepumpe oder E-Auto."
+            f"Mit einer Anlagengroesse von {values['kwp']} Kilowatt Peak erzeugen Sie voraussichtlich "
+            f"{values['yearly_kwh']} Kilowattstunden im Jahr. Ein typisches Einfamilienhaus liegt grob bei "
+            "4 tausend Kilowattstunden, also haben Sie Puffer fuer Zukunftsthemen wie Waermepumpe oder E-Auto."
         ),
         "roof_space": (
             f"Fuer diese Leistung rechnen wir grob mit {values['modules']} Modulen. "
@@ -698,16 +744,27 @@ def _objection_playbook_response(current: str, business_case: dict[str, Any]) ->
 
 
 def _playbook_values(business_case: dict[str, Any]) -> dict[str, str]:
+    spoken = business_case.get("spoken") or _spoken_value_context(
+        kwp=business_case.get("system_size_kwp"),
+        yearly_kwh=business_case.get("yearly_energy_kwh"),
+        price_min=business_case.get("price_min_eur"),
+        price_max=business_case.get("price_max_eur"),
+        payback=business_case.get("payback_years"),
+        yearly_value=business_case.get("estimated_yearly_value_eur"),
+        modules=business_case.get("module_count"),
+        lead_score=business_case.get("lead_score"),
+        ghosting_risk=business_case.get("ghosting_risk"),
+    )
     return {
-        "price_min": _format_de_int(business_case.get("price_min_eur") or 0),
-        "price_max": _format_de_int(business_case.get("price_max_eur") or 0),
-        "yearly_saving": _format_de_int(business_case.get("estimated_yearly_value_eur") or 0),
-        "payback": _format_de_float(business_case.get("payback_years") or 0),
-        "lead_score": _format_de_int(business_case.get("lead_score") or 0),
-        "kwp": _format_de_float(business_case.get("system_size_kwp") or 0),
-        "yearly_kwh": _format_de_int(business_case.get("yearly_energy_kwh") or 0),
-        "modules": _format_de_int(business_case.get("module_count") or 0),
-        "ghosting_risk": _format_de_int(business_case.get("ghosting_risk") or 0),
+        "price_min": spoken.get("price_min") or "noch nicht final",
+        "price_max": spoken.get("price_max") or "noch nicht final",
+        "yearly_saving": spoken.get("yearly_saving") or "noch nicht final",
+        "payback": spoken.get("payback") or "noch nicht final",
+        "lead_score": spoken.get("lead_score") or "noch nicht final",
+        "kwp": spoken.get("kwp") or "noch nicht final",
+        "yearly_kwh": spoken.get("yearly_kwh") or "noch nicht final",
+        "modules": spoken.get("modules") or "noch nicht final",
+        "ghosting_risk": spoken.get("ghosting_risk") or "noch nicht final",
     }
 
 
@@ -724,12 +781,15 @@ def _spoken_ev_savings(
     saving_per_100km = ev_kwh_per_100km * max(public_price - solar_value, 0)
     yearly_saving = int(round((annual_km / 100) * saving_per_100km / 10) * 10)
     if german:
+        km_spoken = _format_phone_int(annual_km)
+        ev_kwh_spoken = _format_phone_int((annual_km / 100) * ev_kwh_per_100km)
+        yearly_saving_spoken = _format_phone_int(yearly_saving)
         return (
-            f"Bei grob {_format_de_int(annual_km)} Kilometern pro Jahr braucht das E-Auto etwa "
-            f"{_format_de_int((annual_km / 100) * ev_kwh_per_100km)} kWh. "
+            f"Bei grob {km_spoken} Kilometern pro Jahr braucht das E-Auto etwa "
+            f"{ev_kwh_spoken} Kilowattstunden. "
             f"Gegenueber oeffentlichem Laden sparen Sie mit Solarstrom grob "
             f"{saving_per_100km:.0f} Euro pro 100 Kilometer, also etwa "
-            f"{_format_de_int(yearly_saving)} Euro pro Jahr."
+            f"{yearly_saving_spoken} Euro pro Jahr."
         )
     return (
         f"At roughly {annual_km:,} kilometers per year, the EV needs about "
@@ -749,6 +809,64 @@ def _format_de_float(value: Any) -> str:
     if number.is_integer():
         return str(int(number))
     return f"{number:.1f}".replace(".", ",")
+
+
+def _spoken_value_context(
+    *,
+    kwp: Any,
+    yearly_kwh: Any,
+    price_min: Any,
+    price_max: Any,
+    payback: Any,
+    yearly_value: Any,
+    modules: Any,
+    lead_score: Any,
+    ghosting_risk: Any,
+) -> dict[str, str | None]:
+    return {
+        "kwp": _format_phone_decimal(kwp),
+        "yearly_kwh": _format_phone_int(yearly_kwh),
+        "price_min": _format_phone_int(price_min),
+        "price_max": _format_phone_int(price_max),
+        "payback": _format_phone_payback(payback),
+        "yearly_saving": _format_phone_int(yearly_value),
+        "modules": _format_phone_int(modules, round_large=False),
+        "lead_score": _format_phone_int(lead_score, round_large=False),
+        "ghosting_risk": _format_phone_int(ghosting_risk, round_large=False),
+    }
+
+
+def _format_phone_int(value: Any, *, round_large: bool = True) -> str | None:
+    if value is None:
+        return None
+    number = int(round(float(value)))
+    if round_large and number >= 1000:
+        number = int(round(number / 100) * 100)
+    if number >= 1000:
+        thousands = number // 1000
+        rest = number % 1000
+        if rest == 0:
+            return f"{thousands} tausend"
+        return f"{thousands} tausend {rest}"
+    return str(number)
+
+
+def _format_phone_decimal(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = _format_de_float(value)
+    return text.replace(",", " Komma ")
+
+
+def _format_phone_payback(value: Any) -> str | None:
+    if value is None:
+        return None
+    number = float(value)
+    if number.is_integer():
+        return str(int(number))
+    lower = int(number)
+    upper = lower + 1
+    return f"{lower} bis {upper}"
 
 
 def _planning_context(stored: dict[str, Any]) -> dict[str, Any]:

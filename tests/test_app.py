@@ -799,9 +799,9 @@ def test_twilio_fallback_calculates_ev_savings_with_mileage() -> None:
         },
     )
 
-    assert "15.000 Kilometern" in response
+    assert "15 tausend Kilometern" in response
     assert "7 Euro pro 100 Kilometer" in response
-    assert "1.080 Euro pro Jahr" in response
+    assert "1 tausend 100 Euro pro Jahr" in response
 
 
 def test_twilio_fallback_understands_spoken_ev_mileage_words() -> None:
@@ -824,8 +824,25 @@ def test_twilio_fallback_understands_spoken_ev_mileage_words() -> None:
         },
     )
 
-    assert "9.000 Kilometern" in response
+    assert "9 tausend Kilometern" in response
     assert "650 Euro pro Jahr" in response
+
+
+def test_twilio_fallback_asks_for_concern_before_numbers() -> None:
+    response = twilio_bridge._local_fallback_response(
+        {"turns": [{"role": "customer", "text": "Ja, wir koennen anfangen."}]},
+        "Ja, wir koennen anfangen.",
+        "de-DE",
+        {
+            "system_size_kwp": 11.6,
+            "yearly_energy_kwh": 8541,
+            "estimated_yearly_value_eur": 2015,
+        },
+    )
+
+    assert "groesste Frage oder Sorge" in response
+    assert "Kilowatt" not in response
+    assert "Euro" not in response
 
 
 def test_twilio_fallback_uses_price_objection_playbook() -> None:
@@ -840,9 +857,9 @@ def test_twilio_fallback_uses_price_objection_playbook() -> None:
         },
     )
 
-    assert "23.320 Euro" in response
-    assert "27.517 Euro" in response
-    assert "2.015 Euro" in response
+    assert "23 tausend 300 Euro" in response
+    assert "27 tausend 500 Euro" in response
+    assert "2 tausend Euro" in response
     assert "Hauptsorge" in response
 
 
@@ -857,9 +874,9 @@ def test_twilio_fallback_uses_production_objection_playbook() -> None:
         },
     )
 
-    assert "11,6 kWp" in response
-    assert "8.541 kWh" in response
-    assert "4.000 kWh" in response
+    assert "11 Komma 6 Kilowatt Peak" in response
+    assert "8 tausend 500 Kilowattstunden" in response
+    assert "4 tausend Kilowattstunden" in response
 
 
 def test_twilio_fallback_uses_roof_space_objection_playbook() -> None:
