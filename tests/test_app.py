@@ -17,6 +17,13 @@ from app.services.twilio_bridge import create_customer_call as real_twilio_creat
 from app.services import gemini
 
 
+def test_default_gemini_model_prefers_pro(monkeypatch) -> None:
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    from app.config import Settings
+
+    assert Settings().gemini_model == "gemini-2.5-pro"
+
+
 @pytest.fixture(autouse=True)
 def _mock_customer_call(monkeypatch):
     async def fake_customer_call(**kwargs):
@@ -923,6 +930,8 @@ def test_twilio_call_payload_includes_lead_specific_context_and_calendar(monkeyp
     assert payload["lead_specific_context"]["address"].startswith("Am Schnittelberg")
     assert payload["appointment_calendar"][0]["label"] == "Mo, 18.05. 10:00 Uhr"
     assert payload["business_case"]["available_slots"][0]["label"] == "Mo, 18.05. 10:00 Uhr"
+    assert payload["call_knowledge"]["vocabulary"]["Autarkiegrad"]
+    assert payload["call_knowledge"]["question_patterns"]["e_auto"]
     assert "Never answer from generic scripts first" in reply_calls[-1]["system_prompt"]
 
 

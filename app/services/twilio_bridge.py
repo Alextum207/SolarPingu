@@ -421,6 +421,8 @@ async def _gemini_call_response(
         "and main concern. Do not run a technical checklist and do not re-qualify the lead. "
         "Never answer from generic scripts first. Use the concrete lead, solar, profitability, "
         "offer, business_case, lead_specific_context, and appointment_calendar in the payload. "
+        "Use call_knowledge only as explanatory vocabulary around the concrete lead data; "
+        "do not cite sources unless the customer explicitly asks. "
         "If the customer asks about their project, answer with this lead's numbers. If the "
         "customer asks when an installer can come, answer only from appointment_calendar; if "
         "slots are available, name the nearest 1-2 slots. If no slots are available, say that "
@@ -482,6 +484,7 @@ async def _gemini_call_response(
         "offer": stored.get("offer"),
         "business_case": business_case,
         "lead_specific_context": _lead_specific_context(lead, business_case),
+        "call_knowledge": _call_knowledge_context(),
         "objection_playbook": _objection_playbook(business_case),
         "agent2_plan": _planning_context(stored),
         "appointment_calendar": business_case.get("available_slots") or [],
@@ -806,6 +809,48 @@ def _lead_specific_context(lead: SolarLeadIntake, business_case: dict[str, Any])
             "yearly_value_eur": spoken.get("yearly_saving"),
             "payback_years": spoken.get("payback"),
             "modules": spoken.get("modules"),
+        },
+    }
+
+
+def _call_knowledge_context() -> dict[str, Any]:
+    return {
+        "source_basis": [
+            "Verbraucherzentrale: PV planning, batteries, eigenverbrauch, autarkie.",
+            "ADAC-style EV logic: consumption in kWh per 100 km, annual kWh from yearly kilometers.",
+            "Local calendar: appointment availability must come from appointment_calendar only.",
+        ],
+        "vocabulary": {
+            "kWp": "Anlagenleistung unter Standardbedingungen; am Telefon als Kilowatt Peak erklaeren.",
+            "kWh": "Energiemenge; fuer Jahresertrag, Haushaltsverbrauch und E-Auto-Verbrauch nutzen.",
+            "Eigenverbrauch": "Anteil des erzeugten Solarstroms, der direkt im Haus genutzt wird.",
+            "Autarkiegrad": "Anteil des gesamten Strombedarfs, der durch eigenen Solarstrom gedeckt wird.",
+            "Netzbezug": "Strom, der weiterhin aus dem oeffentlichen Netz gekauft wird.",
+            "Einspeisung": "Solarstrom, der nicht selbst genutzt und ins Netz abgegeben wird.",
+            "Ueberschussladen": "E-Auto wird bevorzugt mit gerade uebrigem Solarstrom geladen.",
+            "Wallbox": "Ladepunkt zuhause; wichtig fuer solares Laden und Lastmanagement.",
+            "Lastprofil": "Wann im Haushalt Strom gebraucht wird; entscheidet ueber Eigenverbrauch.",
+            "Verschattung": "Baeume, Gauben oder Nachbargebaeude koennen Ertrag reduzieren.",
+            "Wechselrichter": "Wandelt Gleichstrom der Module in nutzbaren Wechselstrom um.",
+            "Hybridwechselrichter": "Wechselrichter, der PV-Anlage und Speicher gemeinsam einbindet.",
+            "Zaehlerschrank": "Kann bei aelteren Anlagen ein Kosten- und Pruefpunkt sein.",
+            "Notstrom": "Zusatzfunktion; nicht jeder Speicher versorgt das Haus bei Stromausfall.",
+        },
+        "talking_points": [
+            "Eigenverbrauch und Autarkie nicht vermischen: Eigenverbrauch fragt, wohin der PV-Strom geht; Autarkie fragt, wie viel Bedarf gedeckt wird.",
+            "Speicher verschiebt Solarstrom typischerweise vom Tag in Abend und Nacht; er macht in Deutschland normalerweise nicht komplett netzunabhaengig.",
+            "Bei typischen Einfamilienhaeusern kann ein Speicher die Unabhaengigkeit deutlich steigern, aber Wintermonate bleiben der kritische Punkt.",
+            "Ein zu grosser Speicher ist nicht automatisch besser; sinnvoll ist die Groesse passend zu Verbrauch, PV-Leistung und Lastprofil.",
+            "E-Auto-Verbrauch immer konkret rechnen: Jahreskilometer geteilt durch 100 mal kWh pro 100 km.",
+            "Bei Terminfragen keine Schaetzung erfinden: nur freie Slots aus appointment_calendar nennen.",
+            "Bei Wirtschaftlichkeitsfragen zuerst die Lead-Zahlen nennen, dann die Bedeutung in Alltagssprache erklaeren.",
+        ],
+        "question_patterns": {
+            "lohnt_sich": "Mit Preisrange, Jahreswert, Amortisation und Lead-Score antworten.",
+            "unabhaengigkeit": "Mit Eigenverbrauch, Autarkiegrad, Speicher, Netzbezug und Wintereinschraenkung antworten.",
+            "e_auto": "Mit km/Jahr, kWh pro 100 km, Jahres-kWh und Ladeort zuhause/oeffentlich antworten.",
+            "termin": "Mit konkreten appointment_calendar Slots antworten.",
+            "technik": "Kurz erklaeren: Module, Wechselrichter, Speicher, Zaehler, Verschattung, Vor-Ort-Pruefung.",
         },
     }
 

@@ -15,7 +15,7 @@ load_dotenv(override=True, encoding="utf-8-sig")
 @dataclass
 class Settings:
     gemini_api_key: str | None = os.getenv("GEMINI_API_KEY") or None
-    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
     google_solar_api_key: str | None = os.getenv("GOOGLE_SOLAR_API_KEY") or None
     speechmatics_api_key: str | None = os.getenv("SPEECHMATICS_API_KEY") or None
     vapi_api_key: str | None = os.getenv("VAPI_API_KEY") or None
