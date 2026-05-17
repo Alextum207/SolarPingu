@@ -72,6 +72,12 @@ def _local_fallback_response(
         "wetter",
         "winter",
         "frankfurt",
+        "unabhangig",
+        "unabhaengig",
+        "autark",
+        "stromnetz",
+        "netz",
+        "energieversorger",
     ]
     has_concern = any(word in current for word in concern_words)
     current_concerns = _detect_objection_keys(current)
@@ -108,9 +114,9 @@ def _local_fallback_response(
             )
         if has_concern:
             return (
-                f"Ja, genau diese Rentabilitaetsfrage ist wichtig. {rough_case} "
-                "Beim E-Auto wird es besonders interessant, wenn Sie viel tagsueber oder mit Speicher laden. "
-                "Der Termin ist dann nicht der Start, sondern die Absicherung dieser Rechnung."
+                f"Ja, genau dieser Punkt ist wichtig. {rough_case} "
+                "Ich wuerde Ihre konkrete Sorge erst sauber klaeren und den Termin danach nur "
+                "als Absicherung der Planung sehen. Welche Annahme soll ich genauer aufdroeseln?"
             )
         if facts["owner"] and facts["timeline"] and not facts["budget"]:
             return "Das passt grundsaetzlich gut. Was waere fuer Sie die groesste Sorge, bevor Sie einen Vor-Ort-Planungstermin zusagen?"
@@ -297,7 +303,7 @@ def build_conversation_relay_twiml(lead_id: str, lead: SolarLeadIntake) -> str:
         f'<ConversationRelay url="{ws_url}" welcomeGreeting="{greeting}" '
         'welcomeGreetingInterruptible="none" interruptible="speech" '
         'interruptSensitivity="low" reportInputDuringAgentSpeech="none" '
-        'ignoreBackchannel="true" speechTimeout="1200" events="speaker-events" '
+        'ignoreBackchannel="true" speechTimeout="2800" events="speaker-events" '
         f'language="{language}">'
         f'<Language code="{language}" ttsProvider="{tts_provider}" '
         f'transcriptionProvider="{transcription_provider}" />'
@@ -419,6 +425,14 @@ async def _gemini_call_response(
         "enough, explain that PV does not need constant direct sun and also works with diffuse "
         "daylight. Use the annual kWh estimate as the anchor, then ask if they worry more about "
         "winter days or the full-year yield. "
+        "For concerns about independence from the grid, electricity providers, autarky, or "
+        "self-sufficiency, answer that PV plus a battery can reduce grid dependency but does "
+        "not usually mean total off-grid operation; explain daytime solar, evening battery use, "
+        "and residual winter/grid demand. "
+        "Always prioritize customer_prompt over conversation_so_far. EV history must not dominate "
+        "later answers. Only continue the EV calculation if the current customer_prompt explicitly "
+        "mentions EV, wallbox, charging, driving, kilometers, or if your immediately previous agent "
+        "message asked for annual kilometers and the customer now answers with kilometers. "
         "If the customer mentions several concerns in one answer, name the concerns briefly, "
         "handle one of them, and ask which one to unpack next. If they bring up a new second "
         "concern later, answer the new concern instead of returning to the first one. "
@@ -809,6 +823,12 @@ def _objection_playbook(business_case: dict[str, Any]) -> dict[str, str]:
             f"das ganze Jahr. Bei Ihren Daten rechnen wir grob mit {values['yearly_kwh']} "
             "Kilowattstunden pro Jahr."
         ),
+        "grid_independence": (
+            "Bei Unabhaengigkeit vom Stromnetz geht es realistisch nicht um komplett autark, "
+            "sondern um deutlich weniger Netzbezug. Tagsueber deckt die PV viel Direktverbrauch, "
+            "ein Speicher verschiebt Solarstrom in den Abend, und im Winter bleibt meist noch "
+            "ein Teil Netzstrom uebrig."
+        ),
     }
 
 
@@ -823,6 +843,8 @@ def _objection_playbook_response(current: str, business_case: dict[str, Any]) ->
         response = playbook["roof_space"]
     elif any(word in current for word in ["mein dach", "dach uberhaupt", "geeignet", "dimensionierung"]):
         response = playbook["roof_quality"]
+    elif any(word in current for word in ["unabhangig", "unabhaengig", "autark", "stromnetz", "netzbezug", "netzstrom", "energieversorger"]):
+        response = playbook["grid_independence"]
     elif any(word in current for word in ["genug strom", "haushalt", "netzstrom", "erzeugt"]):
         response = playbook["production"]
     elif any(word in current for word in ["strompreise sinken", "strompreis sinkt", "schongerechnet", "schoengerechnet"]):
@@ -852,6 +874,7 @@ def _detect_objection_keys(current: str) -> list[str]:
         ("hidden_costs", ["alles drin", "versteckte kosten", "wechselrichter", "montage", "gerust", "geruest"]),
         ("resale", ["haus verkaufe", "verkaufen", "umziehe", "umziehen"]),
         ("sunlight_region", ["sonne", "sonnig", "scheint", "frankfurt", "wetter", "bewolkt", "regen", "winter"]),
+        ("grid_independence", ["unabhangig", "unabhaengig", "autark", "stromnetz", "netzbezug", "netzstrom", "energieversorger"]),
         ("ev", ["e-auto", "e auto", "elektroauto", "elektro", "auto", "wallbox", "laden", "ladestation", "ladesaule"]),
     ]
     detected = []
@@ -874,6 +897,7 @@ def _multi_concern_response(concerns: list[str], business_case: dict[str, Any]) 
         "hidden_costs": "versteckte Kosten",
         "resale": "Hausverkauf",
         "sunlight_region": "Sonne in Frankfurt",
+        "grid_independence": "Unabhaengigkeit vom Stromnetz",
         "ev": "E-Auto-Laden",
     }
     named = [labels.get(concern, concern) for concern in concerns[:3]]
@@ -882,13 +906,15 @@ def _multi_concern_response(concerns: list[str], business_case: dict[str, Any]) 
         return intro + playbook["too_expensive"] + " Danach wuerde ich direkt den naechsten Punkt nehmen. Welcher ist Ihnen gerade wichtiger?"
     if "hidden_costs" in concerns:
         return intro + playbook["hidden_costs"] + " Danach koennen wir den zweiten Punkt sauber klaeren. Passt das?"
-    if "ev" in concerns:
-        return intro + (
-            "Beim E-Auto brauche ich eine Zusatzannahme, sonst rechne ich ins Blaue: "
-            "Wie viele Kilometer fahren Sie grob pro Jahr?"
-        )
+    if "grid_independence" in concerns:
+        return intro + playbook["grid_independence"] + " Ist Ihnen eher weniger Netzbezug wichtig oder echte Notstromfaehigkeit?"
     if "sunlight_region" in concerns:
         return intro + playbook["sunlight_region"] + " Ist Ihre Sorge eher der Winter oder ob der Jahresertrag insgesamt reicht?"
+    if "ev" in concerns:
+        return intro + (
+            "Zum E-Auto kann ich es grob einschaetzen, brauche aber erst Ihre Fahrleistung: "
+            "Wie viele Kilometer fahren Sie ungefaehr pro Jahr?"
+        )
     first = concerns[0]
     if first in playbook:
         return intro + playbook[first] + " Soll ich danach den zweiten Punkt genauer aufdroeseln?"

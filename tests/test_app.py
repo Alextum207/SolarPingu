@@ -641,6 +641,7 @@ def test_twilio_twiml_connects_conversation_relay(monkeypatch, tmp_path) -> None
     assert 'reportInputDuringAgentSpeech="none"' in response.text
     assert 'ignoreBackchannel="true"' in response.text
     assert 'interruptSensitivity="low"' in response.text
+    assert 'speechTimeout="2800"' in response.text
     assert "Vapi" not in response.text
 
 
@@ -1003,6 +1004,53 @@ def test_twilio_fallback_answers_new_second_concern_instead_of_returning_to_ev()
     assert "Montage" in response or "Zaehlerschrank" in response
     assert "23 tausend 300 Euro" in response
     assert "9 tausend Kilometern" not in response
+
+
+def test_twilio_fallback_prioritizes_grid_independence_after_ev_history() -> None:
+    response = twilio_bridge._local_fallback_response(
+        {
+            "turns": [
+                {"role": "customer", "text": "Ich habe ein E-Auto und Sorge ob sich das lohnt."},
+                {"role": "agent", "text": "Wie viele Kilometer fahren Sie grob pro Jahr?"},
+                {"role": "customer", "text": "Circa 9000."},
+                {
+                    "role": "customer",
+                    "text": "Mir geht es jetzt eher um Unabhaengigkeit vom Stromnetz.",
+                },
+            ]
+        },
+        "Mir geht es jetzt eher um Unabhaengigkeit vom Stromnetz.",
+        "de-DE",
+        {
+            "yearly_energy_kwh": 8541,
+            "ev_assumptions": {
+                "ev_kwh_per_100km": 18,
+                "public_charging_eur_per_kwh": 0.55,
+                "solar_charging_value_eur_per_kwh": 0.15,
+            },
+        },
+    )
+
+    assert "Unabhaengigkeit vom Stromnetz" in response or "weniger Netzbezug" in response
+    assert "autark" in response
+    assert "Wie viele Kilometer" not in response
+    assert "9 tausend Kilometern" not in response
+
+
+def test_twilio_fallback_handles_ev_and_grid_as_multiple_current_concerns() -> None:
+    response = twilio_bridge._local_fallback_response(
+        {"turns": [{"role": "customer", "text": "Ich habe ein E-Auto, aber vor allem will ich unabhaengiger vom Stromnetz werden."}]},
+        "Ich habe ein E-Auto, aber vor allem will ich unabhaengiger vom Stromnetz werden.",
+        "de-DE",
+        {
+            "yearly_energy_kwh": 8541,
+        },
+    )
+
+    assert "mehrere Punkte" in response
+    assert "E-Auto-Laden" in response
+    assert "Unabhaengigkeit vom Stromnetz" in response
+    assert "Wie viele Kilometer" not in response
 
 
 def test_gemini_text_returns_fallback_on_rate_limit(monkeypatch) -> None:
