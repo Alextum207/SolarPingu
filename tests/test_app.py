@@ -822,6 +822,55 @@ def test_twilio_websocket_guardrails_topic_switch_from_ev(monkeypatch, tmp_path)
     assert reply_calls[-1]["payload"]["topic_switch"] is True
 
 
+def test_twilio_websocket_guardrails_topic_switch_to_installer_timing(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path / 'twilio_installer_timing.db'}")
+    db.init_db()
+    calls = []
+
+    async def fake_generate_text(**kwargs):
+        calls.append(kwargs)
+        return "Beim E-Auto brauche ich zuerst Ihre Fahrleistung. Wie viele Kilometer fahren Sie pro Jahr?"
+
+    monkeypatch.setattr("app.services.twilio_bridge.gemini.generate_text", fake_generate_text)
+
+    with TestClient(app) as client:
+        lead = client.post("/api/intake", json=_pursue_payload()).json()
+        lead_id = lead["lead_id"]
+        db.update_agentic_artifacts(
+            lead_id,
+            status="call_scheduled",
+            solar={"solar_potential": {"yearly_energy_kwh": 8541}},
+            offer={"includes_battery": True},
+        )
+        with client.websocket_connect(f"/ws/twilio/conversation/{lead_id}") as websocket:
+            websocket.send_json({"type": "setup", "sessionId": "VX123", "callSid": "CA123"})
+            websocket.send_json(
+                {
+                    "type": "prompt",
+                    "voicePrompt": "Ich habe ein E-Auto und Sorge ob sich das lohnt.",
+                    "lang": "de-DE",
+                    "last": True,
+                }
+            )
+            websocket.receive_json()
+            websocket.send_json(
+                {
+                    "type": "prompt",
+                    "voicePrompt": "Wie lange dauert es grob, bis der Handwerker zu uns kommen kann?",
+                    "lang": "de-DE",
+                    "last": True,
+                }
+            )
+            second = websocket.receive_json()
+
+    assert "Handwerker" in second["token"] or "Termin" in second["token"]
+    assert "Wie viele Kilometer" not in second["token"]
+    reply_calls = [call for call in calls if call["payload"].get("customer_prompt")]
+    assert reply_calls[-1]["payload"]["current_concerns"] == ["appointment_timing"]
+    assert "ev" in reply_calls[-1]["payload"]["previous_concerns_context_only"]
+    assert reply_calls[-1]["payload"]["topic_switch"] is True
+
+
 def test_twilio_relay_ignores_backchannel_and_agent_echo() -> None:
     state = {
         "turns": [
@@ -1101,6 +1150,37 @@ def test_twilio_fallback_handles_ev_and_grid_as_multiple_current_concerns() -> N
     assert "E-Auto-Laden" in response
     assert "Unabhaengigkeit vom Stromnetz" in response
     assert "Wie viele Kilometer" not in response
+
+
+def test_twilio_fallback_prioritizes_installer_timing_after_ev_history() -> None:
+    response = twilio_bridge._local_fallback_response(
+        {
+            "turns": [
+                {"role": "customer", "text": "Ich habe ein E-Auto und Sorge ob sich das lohnt."},
+                {"role": "agent", "text": "Wie viele Kilometer fahren Sie grob pro Jahr?"},
+                {"role": "customer", "text": "Circa 9000."},
+                {
+                    "role": "customer",
+                    "text": "Wie lange dauert es grob, bis die Handwerker zu uns kommen koennen?",
+                },
+            ]
+        },
+        "Wie lange dauert es grob, bis die Handwerker zu uns kommen koennen?",
+        "de-DE",
+        {
+            "yearly_energy_kwh": 8541,
+            "ev_assumptions": {
+                "ev_kwh_per_100km": 18,
+                "public_charging_eur_per_kwh": 0.55,
+                "solar_charging_value_eur_per_kwh": 0.15,
+            },
+        },
+    )
+
+    assert "Handwerker" in response or "Termin" in response
+    assert "Auswahl freier Termine" in response
+    assert "Wie viele Kilometer" not in response
+    assert "9 tausend Kilometern" not in response
 
 
 def test_gemini_text_returns_fallback_on_rate_limit(monkeypatch) -> None:

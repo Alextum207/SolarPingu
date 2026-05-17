@@ -78,6 +78,14 @@ def _local_fallback_response(
         "stromnetz",
         "netz",
         "energieversorger",
+        "handwerker",
+        "monteur",
+        "installateur",
+        "termin",
+        "vor ort",
+        "vor-ort",
+        "kommen",
+        "wartezeit",
     ]
     has_concern = any(word in current for word in concern_words)
     current_concerns = _detect_objection_keys(current)
@@ -429,6 +437,10 @@ async def _gemini_call_response(
         "self-sufficiency, answer that PV plus a battery can reduce grid dependency but does "
         "not usually mean total off-grid operation; explain daytime solar, evening battery use, "
         "and residual winter/grid demand. "
+        "For questions about when the installer can come, appointment timing, waiting time, "
+        "or on-site availability, answer the scheduling question directly. Do not return to "
+        "EV, price, or independence unless the current customer_prompt asks for it. Explain "
+        "that the customer can choose a free online or on-site slot and the installer confirms it. "
         "Always prioritize customer_prompt over conversation_so_far. EV history must not dominate "
         "later answers. Only continue the EV calculation if the current customer_prompt explicitly "
         "mentions EV, wallbox, charging, driving, kilometers, or if your immediately previous agent "
@@ -836,6 +848,11 @@ def _objection_playbook(business_case: dict[str, Any]) -> dict[str, str]:
             "ein Speicher verschiebt Solarstrom in den Abend, und im Winter bleibt meist noch "
             "ein Teil Netzstrom uebrig."
         ),
+        "appointment_timing": (
+            "Zum Handwerker-Termin: Sie bekommen nach dem Gespraech eine Auswahl freier Termine. "
+            "Dort koennen Sie online oder Vor-Ort waehlen; der Handwerker bestaetigt den Termin "
+            "danach final. Je nach freiem Slot kann das oft zeitnah passieren."
+        ),
     }
 
 
@@ -852,6 +869,8 @@ def _objection_playbook_response(current: str, business_case: dict[str, Any]) ->
         response = playbook["roof_quality"]
     elif any(word in current for word in ["unabhangig", "unabhaengig", "autark", "stromnetz", "netzbezug", "netzstrom", "energieversorger"]):
         response = playbook["grid_independence"]
+    elif any(word in current for word in ["handwerker", "monteur", "installateur", "termin", "vor ort", "vor-ort", "kommen", "wartezeit", "wie lange dauert", "wann konnen", "wann koennen"]):
+        response = playbook["appointment_timing"]
     elif any(word in current for word in ["genug strom", "haushalt", "netzstrom", "erzeugt"]):
         response = playbook["production"]
     elif any(word in current for word in ["strompreise sinken", "strompreis sinkt", "schongerechnet", "schoengerechnet"]):
@@ -882,6 +901,7 @@ def _detect_objection_keys(current: str) -> list[str]:
         ("resale", ["haus verkaufe", "verkaufen", "umziehe", "umziehen"]),
         ("sunlight_region", ["sonne", "sonnig", "scheint", "frankfurt", "wetter", "bewolkt", "regen", "winter"]),
         ("grid_independence", ["unabhangig", "unabhaengig", "autark", "stromnetz", "netzbezug", "netzstrom", "energieversorger"]),
+        ("appointment_timing", ["handwerker", "monteur", "installateur", "termin", "vor ort", "vor-ort", "kommen", "wartezeit", "wie lange dauert", "wann konnen", "wann koennen"]),
         ("ev", ["e-auto", "e auto", "elektroauto", "elektro", "auto", "wallbox", "laden", "ladestation", "ladesaule"]),
     ]
     detected = []
@@ -935,6 +955,7 @@ def _response_ignores_current_concern(response: str, current_concerns: list[str]
         "too_expensive": ["preis", "investition", "euro", "ersparnis", "teuer"],
         "roof_space": ["modul", "dach", "flaeche", "platz"],
         "production": ["kilowattstunden", "strom", "haushalt", "erzeug"],
+        "appointment_timing": ["handwerker", "monteur", "installateur", "termin", "vor ort", "vor-ort", "slot", "zeitnah"],
     }
     non_ev_concerns = [concern for concern in current_concerns if concern != "ev"]
     if non_ev_concerns and "ev" in text:
@@ -961,6 +982,7 @@ def _multi_concern_response(concerns: list[str], business_case: dict[str, Any]) 
         "resale": "Hausverkauf",
         "sunlight_region": "Sonne in Frankfurt",
         "grid_independence": "Unabhaengigkeit vom Stromnetz",
+        "appointment_timing": "Handwerker-Termin",
         "ev": "E-Auto-Laden",
     }
     named = [labels.get(concern, concern) for concern in concerns[:3]]
@@ -969,6 +991,8 @@ def _multi_concern_response(concerns: list[str], business_case: dict[str, Any]) 
         return intro + playbook["too_expensive"] + " Danach wuerde ich direkt den naechsten Punkt nehmen. Welcher ist Ihnen gerade wichtiger?"
     if "hidden_costs" in concerns:
         return intro + playbook["hidden_costs"] + " Danach koennen wir den zweiten Punkt sauber klaeren. Passt das?"
+    if "appointment_timing" in concerns:
+        return intro + playbook["appointment_timing"] + " Geht es Ihnen eher um den fruehesten Termin oder darum, ob online oder vor Ort besser passt?"
     if "grid_independence" in concerns:
         return intro + playbook["grid_independence"] + " Ist Ihnen eher weniger Netzbezug wichtig oder echte Notstromfaehigkeit?"
     if "sunlight_region" in concerns:
