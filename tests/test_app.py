@@ -637,6 +637,10 @@ def test_twilio_twiml_connects_conversation_relay(monkeypatch, tmp_path) -> None
     assert "<ConversationRelay" in response.text
     assert 'url="wss://agent1.example.com/ws/twilio/conversation/' in response.text
     assert 'code="multi"' in response.text
+    assert "I will match your language" not in response.text
+    assert 'reportInputDuringAgentSpeech="none"' in response.text
+    assert 'ignoreBackchannel="true"' in response.text
+    assert 'interruptSensitivity="low"' in response.text
     assert "Vapi" not in response.text
 
 
@@ -765,6 +769,34 @@ def test_twilio_conversation_relay_websocket_uses_gemini(monkeypatch, tmp_path) 
     assert "objection_playbook" in calls[0]["payload"]
     assert calls[0]["payload"]["business_case"]["module_count"] == 29
     assert "ev" in calls[0]["payload"]["current_concerns"]
+
+
+def test_twilio_relay_ignores_backchannel_and_agent_echo() -> None:
+    state = {
+        "turns": [
+            {
+                "role": "agent",
+                "text": "Was ist bei Ihnen gerade die groesste Frage oder Sorge zu Solar?",
+            }
+        ]
+    }
+
+    assert twilio_bridge._should_ignore_relay_prompt("Thanks.", state) is True
+    assert twilio_bridge._should_ignore_relay_prompt("What is your biggest concern?", state) is True
+    assert (
+        twilio_bridge._should_ignore_relay_prompt(
+            "Was ist bei Ihnen gerade die groesste Frage oder Sorge zu Solar?",
+            state,
+        )
+        is True
+    )
+    assert (
+        twilio_bridge._should_ignore_relay_prompt(
+            "Ich weiss nicht, ob in Frankfurt immer die Sonne scheint.",
+            state,
+        )
+        is False
+    )
 
 
 def test_twilio_fallback_asks_for_ev_mileage_before_concluding() -> None:

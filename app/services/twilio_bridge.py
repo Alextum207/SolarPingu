@@ -173,6 +173,62 @@ def _qualification_flags(text: str) -> dict[str, bool]:
         ),
     }
 
+
+def _should_ignore_relay_prompt(prompt: str, state: dict[str, Any]) -> bool:
+    current = _normalize_for_matching(prompt).strip(" .,!?:;-")
+    if not current:
+        return True
+    backchannels = {
+        "thanks",
+        "thank you",
+        "ok",
+        "okay",
+        "yes",
+        "yeah",
+        "mhm",
+        "uh huh",
+        "danke",
+        "dankeschon",
+        "dankeschoen",
+        "ja",
+        "genau",
+    }
+    if current in backchannels:
+        return True
+    agent_echo_fragments = [
+        "i will match your language",
+        "just need to confirm a few",
+        "what is your biggest concern",
+        "before we schedule",
+        "thanks what is your biggest concern",
+        "was ist bei ihnen gerade die groesste frage",
+        "groesste frage oder sorge",
+        "hier ist solarpingu wegen ihrer solaranfrage",
+    ]
+    if any(fragment in current for fragment in agent_echo_fragments):
+        return True
+    agent_turns = [
+        _normalize_for_matching(turn.get("text", ""))
+        for turn in state.get("turns", [])
+        if turn.get("role") == "agent"
+    ]
+    if agent_turns:
+        last_agent = agent_turns[-1]
+        if len(current) >= 10 and (current in last_agent or last_agent in current):
+            return True
+        current_words = set(current.split())
+        agent_words = set(last_agent.split())
+        if len(current_words) >= 4:
+            overlap = len(current_words & agent_words) / max(len(current_words), 1)
+            if overlap >= 0.75:
+                return True
+    if not any(turn.get("role") == "customer" for turn in state.get("turns", [])):
+        startup_noise = ["time", "ah", "um", "hm", "hmm"]
+        if current in startup_noise or len(current.split()) <= 2 and current in {"what is", "thanks"}:
+            return True
+    return False
+
+
 async def create_customer_call(
     *,
     lead_id: str,
@@ -223,11 +279,11 @@ async def create_customer_call(
 
 
 def build_conversation_relay_twiml(lead_id: str, lead: SolarLeadIntake) -> str:
-    first_name = html.escape(lead.name.strip().split()[0] if lead.name.strip() else "there")
+    first_name = html.escape(lead.name.strip().split()[0] if lead.name.strip() else "danke")
     ws_url = html.escape(_public_ws_url(f"/ws/twilio/conversation/{lead_id}"))
     greeting = html.escape(
-        f"Hi {first_name}, this is SolarPingu. I will match your language. "
-        "I just need to confirm a few details about your solar request."
+        f"Hallo {first_name}, hier ist SolarPingu wegen Ihrer Solaranfrage. "
+        "Was ist bei Ihnen gerade die groesste Frage oder Sorge zu Solar?"
     )
     language = html.escape(settings.twilio_relay_language)
     tts_provider = html.escape(settings.twilio_relay_tts_provider)
@@ -239,8 +295,9 @@ def build_conversation_relay_twiml(lead_id: str, lead: SolarLeadIntake) -> str:
         + html.escape(_public_http_url(f"/webhooks/twilio/relay-ended/{lead_id}"))
         + '">'
         f'<ConversationRelay url="{ws_url}" welcomeGreeting="{greeting}" '
-        'welcomeGreetingInterruptible="speech" interruptible="speech" '
-        'reportInputDuringAgentSpeech="speech" events="speaker-events" '
+        'welcomeGreetingInterruptible="none" interruptible="speech" '
+        'interruptSensitivity="low" reportInputDuringAgentSpeech="none" '
+        'ignoreBackchannel="true" speechTimeout="1200" events="speaker-events" '
         f'language="{language}">'
         f'<Language code="{language}" ttsProvider="{tts_provider}" '
         f'transcriptionProvider="{transcription_provider}" />'
@@ -301,6 +358,13 @@ async def _handle_prompt(
     if not prompt:
         return
     lang = str(message.get("lang") or state.get("last_lang") or "multi")
+    if _should_ignore_relay_prompt(prompt, state):
+        _store_twilio_voice_event(
+            lead.lead_id or "",
+            "conversation_ignored_prompt",
+            {"prompt": prompt, "lang": lang, "reason": "backchannel_or_agent_echo"},
+        )
+        return
     state["last_lang"] = lang
     state["turns"].append({"role": "customer", "text": prompt, "lang": lang})
 
@@ -315,8 +379,8 @@ async def _handle_prompt(
         "type": "text",
         "token": response,
         "last": True,
-        "interruptible": True,
-        "preemptible": True,
+        "interruptible": False,
+        "preemptible": False,
     }
     await websocket.send_json(reply)
 
