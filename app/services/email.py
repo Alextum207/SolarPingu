@@ -163,7 +163,30 @@ def send_customer_booking_followup(
     lead: SolarLeadIntake,
     *,
     summary: str | None = None,
+    should_continue: bool = True,
 ) -> dict:
+    del summary
+    if not should_continue:
+        subject = "Ihre Solar-Anfrage"
+        body = (
+            f"Hallo {lead.name},\n\n"
+            "danke fuer das Gespraech und Ihre Angaben. Nach der aktuellen Einschaetzung "
+            "moechten wir an dieser Stelle noch keinen weiteren Termin vorschlagen.\n\n"
+            "Falls sich bei Budget, Zeitplan oder Projektumfang etwas aendert, koennen "
+            "wir die Anfrage gern erneut pruefen.\n\n"
+            "Viele Gruesse\nSolar Lead OS"
+        )
+        html_body = _customer_status_html(
+            headline="Danke fuer Ihre Anfrage",
+            intro=(
+                "Danke fuer das Gespraech und Ihre Angaben. Nach der aktuellen "
+                "Einschaetzung moechten wir an dieser Stelle noch keinen weiteren "
+                "Termin vorschlagen."
+            ),
+            lead=lead,
+        )
+        return _send_email(str(lead.email), subject, body, lead.lead_id, html_body)
+
     link = booking_link(lead.lead_id or "")
     subject = "Naechster Schritt: Ihren Solar-Termin buchen"
     body = (
@@ -173,8 +196,6 @@ def send_customer_booking_followup(
         f"Hier koennen Sie einen freien Termin auswaehlen: {link}\n\n"
         "Sie koennen online starten oder direkt einen Vor-Ort-Termin fuer die konkrete Planung buchen.\n\n"
     )
-    if summary:
-        body += f"Kurze Zusammenfassung: {summary}\n\n"
     body += "Viele Gruesse\nSolar Lead OS"
     html_body = _customer_booking_html(
         headline="Wir moechten mit Ihnen weiterarbeiten",
@@ -184,7 +205,6 @@ def send_customer_booking_followup(
         ),
         lead=lead,
         primary_url=link,
-        summary=summary,
     )
     return _send_email(str(lead.email), subject, body, lead.lead_id, html_body)
 
@@ -550,16 +570,10 @@ def _customer_booking_html(
     intro: str,
     lead: SolarLeadIntake,
     primary_url: str,
-    summary: str | None = None,
 ) -> str:
     esc = html_lib.escape
     online_url = _booking_link_with_mode(lead.lead_id or "", "online")
     in_person_url = _booking_link_with_mode(lead.lead_id or "", "in_person")
-    summary_html = (
-        f'<p style="line-height:1.55;margin:0 0 18px;color:#405144;">{esc(summary)}</p>'
-        if summary
-        else ""
-    )
     return f"""<!doctype html>
 <html>
   <body style="margin:0;background:#f4f7f2;font-family:Arial,sans-serif;color:#172018;">
@@ -572,7 +586,6 @@ def _customer_booking_html(
           <tr><td style="padding:24px 28px;">
             <p style="line-height:1.55;margin:0 0 18px;">Hallo {esc(lead.name)},</p>
             <p style="line-height:1.55;margin:0 0 18px;">{esc(intro)}</p>
-            {summary_html}
             <p style="margin:0 0 20px;">
               <a href="{esc(primary_url)}" style="display:inline-block;background:#1d6f42;color:#ffffff;text-decoration:none;font-weight:bold;padding:14px 18px;border-radius:6px;">
                 Freie Termine ansehen
@@ -588,6 +601,33 @@ def _customer_booking_html(
                 </td>
               </tr>
             </table>
+          </td></tr>
+        </table>
+      </td></tr>
+    </table>
+  </body>
+</html>"""
+
+
+def _customer_status_html(
+    *,
+    headline: str,
+    intro: str,
+    lead: SolarLeadIntake,
+) -> str:
+    esc = html_lib.escape
+    return f"""<!doctype html>
+<html>
+  <body style="margin:0;background:#f4f7f2;font-family:Arial,sans-serif;color:#172018;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f4f7f2;padding:24px 0;">
+      <tr><td align="center">
+        <table role="presentation" width="640" cellspacing="0" cellpadding="0" style="width:640px;max-width:94%;background:#ffffff;border:1px solid #dbe6d6;border-radius:8px;overflow:hidden;">
+          <tr><td style="padding:24px 28px;background:#15351f;color:#ffffff;">
+            <h1 style="margin:0;font-size:24px;line-height:1.25;">{esc(headline)}</h1>
+          </td></tr>
+          <tr><td style="padding:24px 28px;">
+            <p style="line-height:1.55;margin:0 0 18px;">Hallo {esc(lead.name)},</p>
+            <p style="line-height:1.55;margin:0;">{esc(intro)}</p>
           </td></tr>
         </table>
       </td></tr>

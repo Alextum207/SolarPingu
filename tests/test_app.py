@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from app import db
 from app.config import settings
 from app.main import app
-from app.models import Slot
+from app.models import Slot, SolarLeadIntake
 from app.services import calendar, email, speechmatics, twilio_bridge, vapi
 from app.services.twilio_bridge import create_customer_call as real_twilio_create_customer_call
 from app.services import gemini
@@ -1183,6 +1183,51 @@ def test_conversation_summary_includes_agent2_plan(monkeypatch, tmp_path) -> Non
     assert "Partner West" in result["html_body"]
     assert "Call-Audio" in result["html_body"]
     assert "Gespraechszusammenfassung" in result["html_body"]
+
+
+def test_customer_booking_followup_does_not_include_transcript_or_summary(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path / 'customer_followup.db'}")
+    monkeypatch.setattr(settings, "public_base_url", "https://agent1.example.com")
+    monkeypatch.setattr(settings, "smtp_host", None)
+    db.init_db()
+    lead = SolarLeadIntake.model_validate(_pursue_payload() | {"lead_id": "L-CUSTOMER"})
+
+    result = email.send_customer_booking_followup(
+        lead,
+        summary="customer: Ich habe Sorge wegen Preis.\nagent: Interne Zusammenfassung",
+    )
+
+    assert result["status"] == "demo_logged"
+    assert "Wir moechten mit Ihnen weiterarbeiten" in result["body"]
+    assert "Hier koennen Sie einen freien Termin auswaehlen" in result["body"]
+    assert "/book/L-CUSTOMER" in result["body"]
+    assert "Interne Zusammenfassung" not in result["body"]
+    assert "customer:" not in result["body"]
+    assert result["html_body"] is not None
+    assert "Interne Zusammenfassung" not in result["html_body"]
+    assert "Online-Termin buchen" in result["html_body"]
+    assert "Vor-Ort-Termin buchen" in result["html_body"]
+
+
+def test_customer_followup_can_decline_without_booking_link(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path / 'customer_decline.db'}")
+    monkeypatch.setattr(settings, "public_base_url", "https://agent1.example.com")
+    monkeypatch.setattr(settings, "smtp_host", None)
+    db.init_db()
+    lead = SolarLeadIntake.model_validate(_pursue_payload() | {"lead_id": "L-DECLINE"})
+
+    result = email.send_customer_booking_followup(
+        lead,
+        summary="Dieses interne Gespraechsprotokoll darf nicht raus.",
+        should_continue=False,
+    )
+
+    assert result["status"] == "demo_logged"
+    assert "noch keinen weiteren Termin vorschlagen" in result["body"]
+    assert "/book/L-DECLINE" not in result["body"]
+    assert "Dieses interne Gespraechsprotokoll" not in result["body"]
+    assert result["html_body"] is not None
+    assert "Freie Termine ansehen" not in result["html_body"]
 
 
 def test_dashboard_lead_detail_alias_opens_exact_lead(monkeypatch, tmp_path) -> None:
