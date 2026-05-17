@@ -772,6 +772,56 @@ def test_twilio_conversation_relay_websocket_uses_gemini(monkeypatch, tmp_path) 
     assert "ev" in calls[0]["payload"]["current_concerns"]
 
 
+def test_twilio_websocket_guardrails_topic_switch_from_ev(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path / 'twilio_topic_switch.db'}")
+    db.init_db()
+    calls = []
+
+    async def fake_generate_text(**kwargs):
+        calls.append(kwargs)
+        return "Beim E-Auto brauche ich zuerst Ihre Fahrleistung. Wie viele Kilometer fahren Sie pro Jahr?"
+
+    monkeypatch.setattr("app.services.twilio_bridge.gemini.generate_text", fake_generate_text)
+
+    with TestClient(app) as client:
+        lead = client.post("/api/intake", json=_pursue_payload()).json()
+        lead_id = lead["lead_id"]
+        db.update_agentic_artifacts(
+            lead_id,
+            status="call_scheduled",
+            solar={"solar_potential": {"yearly_energy_kwh": 8541}},
+            offer={"includes_battery": True},
+        )
+        with client.websocket_connect(f"/ws/twilio/conversation/{lead_id}") as websocket:
+            websocket.send_json({"type": "setup", "sessionId": "VX123", "callSid": "CA123"})
+            websocket.send_json(
+                {
+                    "type": "prompt",
+                    "voicePrompt": "Ich habe ein E-Auto und Sorge ob sich das lohnt.",
+                    "lang": "de-DE",
+                    "last": True,
+                }
+            )
+            first = websocket.receive_json()
+            websocket.send_json(
+                {
+                    "type": "prompt",
+                    "voicePrompt": "Mir geht es jetzt aber um Unabhaengigkeit vom Stromnetz.",
+                    "lang": "de-DE",
+                    "last": True,
+                }
+            )
+            second = websocket.receive_json()
+
+    assert first["token"].startswith("Beim E-Auto")
+    assert "weniger Netzbezug" in second["token"] or "Unabhaengigkeit vom Stromnetz" in second["token"]
+    assert "Wie viele Kilometer" not in second["token"]
+    reply_calls = [call for call in calls if call["payload"].get("customer_prompt")]
+    assert reply_calls[-1]["payload"]["current_concerns"] == ["grid_independence"]
+    assert "ev" in reply_calls[-1]["payload"]["previous_concerns_context_only"]
+    assert reply_calls[-1]["payload"]["topic_switch"] is True
+
+
 def test_twilio_relay_ignores_backchannel_and_agent_echo() -> None:
     state = {
         "turns": [

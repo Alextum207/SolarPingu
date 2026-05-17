@@ -451,6 +451,8 @@ async def _gemini_call_response(
             if turn.get("role") == "customer"
         )
     )
+    current_concerns = _detect_objection_keys(_normalize_for_matching(prompt))
+    previous_concerns = _previous_objection_keys(state, exclude_last_customer=True)
     payload = {
         "lead": lead.model_dump(mode="json"),
         "solar": stored.get("solar"),
@@ -461,17 +463,22 @@ async def _gemini_call_response(
         "agent2_plan": _planning_context(stored),
         "conversation_so_far": state["turns"][-8:],
         "known_qualification": _qualification_flags(customer_text),
-        "current_concerns": _detect_objection_keys(_normalize_for_matching(prompt)),
+        "current_concerns": current_concerns,
+        "previous_concerns_context_only": previous_concerns,
+        "topic_switch": bool(current_concerns and set(current_concerns) - set(previous_concerns)),
         "customer_prompt": prompt,
         "detected_language": lang,
         "task": "Return only the next spoken agent reply.",
     }
-    return await gemini.generate_text(
+    response = await gemini.generate_text(
         system_prompt=system_prompt,
         payload=payload,
         temperature=0.35,
         fallback=fallback,
     )
+    if _response_ignores_current_concern(response, current_concerns):
+        return fallback
+    return response
 
 
 def _store_twilio_voice_event(lead_id: str, event_type: str, payload: dict[str, Any]) -> None:
@@ -882,6 +889,62 @@ def _detect_objection_keys(current: str) -> list[str]:
         if any(word in current for word in words):
             detected.append(key)
     return detected
+
+
+def _previous_objection_keys(
+    state: dict[str, Any],
+    *,
+    exclude_last_customer: bool = False,
+) -> list[str]:
+    detected: list[str] = []
+    turns = list(state.get("turns", []))
+    if exclude_last_customer:
+        for index in range(len(turns) - 1, -1, -1):
+            if turns[index].get("role") == "customer":
+                turns = turns[:index] + turns[index + 1 :]
+                break
+    for turn in turns:
+        if turn.get("role") != "customer":
+            continue
+        for key in _detect_objection_keys(_normalize_for_matching(str(turn.get("text") or ""))):
+            if key not in detected:
+                detected.append(key)
+    return detected
+
+
+def _response_ignores_current_concern(response: str, current_concerns: list[str]) -> bool:
+    if not current_concerns:
+        return False
+    text = _normalize_for_matching(response)
+    ev_markers = [
+        "wie viele kilometer",
+        "kilometer fahren",
+        "fahrleistung",
+        "e-auto",
+        "elektroauto",
+        "wallbox",
+        "autoladen",
+        "laden zuhause",
+    ]
+    if "ev" not in current_concerns and any(marker in text for marker in ev_markers):
+        return True
+    concern_markers = {
+        "grid_independence": ["unabhang", "unabhaeng", "stromnetz", "netzbezug", "autark", "speicher"],
+        "sunlight_region": ["sonne", "frankfurt", "wetter", "winter", "jahresertrag", "diffus"],
+        "hidden_costs": ["montage", "wechselrichter", "geruest", "zaehlerschrank", "kosten"],
+        "too_expensive": ["preis", "investition", "euro", "ersparnis", "teuer"],
+        "roof_space": ["modul", "dach", "flaeche", "platz"],
+        "production": ["kilowattstunden", "strom", "haushalt", "erzeug"],
+    }
+    non_ev_concerns = [concern for concern in current_concerns if concern != "ev"]
+    if non_ev_concerns and "ev" in text:
+        matches_current = any(
+            any(marker in text for marker in concern_markers.get(concern, []))
+            for concern in non_ev_concerns
+        )
+        if not matches_current:
+            return True
+    return False
 
 
 def _multi_concern_response(concerns: list[str], business_case: dict[str, Any]) -> str:
