@@ -427,6 +427,10 @@ async def _gemini_call_response(
         "customer asks when an installer can come, answer only from appointment_calendar; if "
         "slots are available, name the nearest 1-2 slots. If no slots are available, say that "
         "no live slots are readable right now and the booking link will show the next options. "
+        "If a required value is missing, do not invent it as fact. Use the available lead data, "
+        "state the missing value clearly, and ask exactly one targeted follow-up question. "
+        "If you use a scenario assumption such as 70 percent home charging, label it explicitly "
+        "as an assumption and ask the customer to confirm or correct it. "
         "Your first goal is to resolve the customer's concern in plain human language. "
         "At the very beginning, when the customer only says they are ready or you can start, "
         "do not recite system size, yearly kWh, savings, payback, prices, or any other numbers. "
@@ -755,6 +759,7 @@ def _business_case_context(stored: dict[str, Any], lead: SolarLeadIntake) -> dic
             "ev_kwh_per_100km": 18,
             "public_charging_eur_per_kwh": 0.55,
             "solar_charging_value_eur_per_kwh": 0.15,
+            "default_home_charging_share": 0.7,
             "saving_vs_public_charging_eur_per_100km": 7.2,
         },
         "main_concern": lead.main_concern,
@@ -841,9 +846,10 @@ def _call_knowledge_context() -> dict[str, Any]:
             "Speicher verschiebt Solarstrom typischerweise vom Tag in Abend und Nacht; er macht in Deutschland normalerweise nicht komplett netzunabhaengig.",
             "Bei typischen Einfamilienhaeusern kann ein Speicher die Unabhaengigkeit deutlich steigern, aber Wintermonate bleiben der kritische Punkt.",
             "Ein zu grosser Speicher ist nicht automatisch besser; sinnvoll ist die Groesse passend zu Verbrauch, PV-Leistung und Lastprofil.",
-            "E-Auto-Verbrauch immer konkret rechnen: Jahreskilometer geteilt durch 100 mal kWh pro 100 km.",
+            "E-Auto-Verbrauch immer konkret rechnen: Jahreskilometer geteilt durch 100 mal kWh pro 100 km. Wenn der Zuhause-Ladeanteil fehlt, 70 Prozent nur als Annahme nennen und danach fragen.",
             "Bei Terminfragen keine Schaetzung erfinden: nur freie Slots aus appointment_calendar nennen.",
             "Bei Wirtschaftlichkeitsfragen zuerst die Lead-Zahlen nennen, dann die Bedeutung in Alltagssprache erklaeren.",
+            "Wenn ein Wert fehlt, genau diesen Wert erfragen, statt allgemein auszuweichen.",
         ],
         "question_patterns": {
             "lohnt_sich": "Mit Preisrange, Jahreswert, Amortisation und Lead-Score antworten.",
@@ -1161,25 +1167,34 @@ def _spoken_ev_savings(
     ev_kwh_per_100km = float(assumptions.get("ev_kwh_per_100km") or 18)
     public_price = float(assumptions.get("public_charging_eur_per_kwh") or 0.55)
     solar_value = float(assumptions.get("solar_charging_value_eur_per_kwh") or 0.15)
+    home_share = float(assumptions.get("default_home_charging_share") or 0.7)
+    home_share = max(0, min(home_share, 1))
     saving_per_100km = ev_kwh_per_100km * max(public_price - solar_value, 0)
-    yearly_saving = int(round((annual_km / 100) * saving_per_100km / 10) * 10)
+    yearly_ev_kwh = (annual_km / 100) * ev_kwh_per_100km
+    home_ev_kwh = yearly_ev_kwh * home_share
+    yearly_saving = int(round(home_ev_kwh * max(public_price - solar_value, 0) / 10) * 10)
     if german:
         km_spoken = _format_phone_int(annual_km)
-        ev_kwh_spoken = _format_phone_int((annual_km / 100) * ev_kwh_per_100km)
+        ev_kwh_spoken = _format_phone_int(yearly_ev_kwh)
+        home_ev_kwh_spoken = _format_phone_int(home_ev_kwh)
         yearly_saving_spoken = _format_phone_int(yearly_saving)
+        price_delta_spoken = _format_phone_decimal(public_price - solar_value)
+        home_percent = int(round(home_share * 100))
         return (
             f"Bei grob {km_spoken} Kilometern pro Jahr braucht das E-Auto etwa "
-            f"{ev_kwh_spoken} Kilowattstunden. "
-            f"Gegenueber oeffentlichem Laden sparen Sie mit Solarstrom grob "
-            f"{saving_per_100km:.0f} Euro pro 100 Kilometer, also etwa "
-            f"{yearly_saving_spoken} Euro pro Jahr."
+            f"{ev_kwh_spoken} Kilowattstunden. Wenn wir als Annahme sagen, dass Sie "
+            f"{home_percent} Prozent zuhause laden, waeren das rund {home_ev_kwh_spoken} "
+            "Kilowattstunden zuhause. "
+            f"Bei etwa {price_delta_spoken} Euro Vorteil pro Kilowattstunde "
+            f"entspricht das grob {yearly_saving_spoken} Euro Ersparnis pro Jahr. "
+            "Laden Sie eher zuhause oder ueberwiegend unterwegs?"
         )
     return (
         f"At roughly {annual_km:,} kilometers per year, the EV needs about "
-        f"{int((annual_km / 100) * ev_kwh_per_100km):,} kWh. "
-        f"Compared with public charging, solar charging can save roughly "
-        f"{saving_per_100km:.0f} euros per 100 kilometers, or about "
-        f"{yearly_saving:,} euros per year."
+        f"{int(yearly_ev_kwh):,} kWh. Assuming {home_share:.0%} home charging, that is about "
+        f"{int(home_ev_kwh):,} kWh at home. At roughly {public_price - solar_value:.2f} euros "
+        f"advantage per kWh, that is about {yearly_saving:,} euros per year. "
+        "Do you mostly charge at home or on the road?"
     )
 
 

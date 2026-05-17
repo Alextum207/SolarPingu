@@ -933,6 +933,7 @@ def test_twilio_call_payload_includes_lead_specific_context_and_calendar(monkeyp
     assert payload["call_knowledge"]["vocabulary"]["Autarkiegrad"]
     assert payload["call_knowledge"]["question_patterns"]["e_auto"]
     assert "Never answer from generic scripts first" in reply_calls[-1]["system_prompt"]
+    assert "ask exactly one targeted follow-up question" in reply_calls[-1]["system_prompt"]
 
 
 def test_twilio_relay_ignores_backchannel_and_agent_echo() -> None:
@@ -997,8 +998,11 @@ def test_twilio_fallback_calculates_ev_savings_with_mileage() -> None:
     )
 
     assert "15 tausend Kilometern" in response
-    assert "7 Euro pro 100 Kilometer" in response
-    assert "1 tausend 100 Euro pro Jahr" in response
+    assert "2 tausend 700 Kilowattstunden" in response
+    assert "70 Prozent zuhause" in response
+    assert "1 tausend 900 Kilowattstunden zuhause" in response
+    assert "760 Euro Ersparnis pro Jahr" in response
+    assert "Laden Sie eher zuhause" in response
 
 
 def test_twilio_fallback_understands_spoken_ev_mileage_words() -> None:
@@ -1022,7 +1026,10 @@ def test_twilio_fallback_understands_spoken_ev_mileage_words() -> None:
     )
 
     assert "9 tausend Kilometern" in response
-    assert "650 Euro pro Jahr" in response
+    assert "1 tausend 600 Kilowattstunden" in response
+    assert "1 tausend 100 Kilowattstunden zuhause" in response
+    assert "450 Euro Ersparnis pro Jahr" in response
+    assert "Laden Sie eher zuhause" in response
 
 
 def test_twilio_fallback_asks_for_concern_before_numbers() -> None:
@@ -1307,6 +1314,8 @@ def test_twilio_fallback_calculates_ev_consumption_from_km_question() -> None:
 
     assert "9 tausend Kilometern" in response
     assert "1 tausend 600 Kilowattstunden" in response
+    assert "70 Prozent zuhause" in response
+    assert "450 Euro Ersparnis pro Jahr" in response
 
 
 def test_gemini_text_returns_fallback_on_rate_limit(monkeypatch) -> None:
