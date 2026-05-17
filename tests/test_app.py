@@ -871,6 +871,61 @@ def test_twilio_websocket_guardrails_topic_switch_to_installer_timing(monkeypatc
     assert reply_calls[-1]["payload"]["topic_switch"] is True
 
 
+def test_twilio_call_payload_includes_lead_specific_context_and_calendar(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{tmp_path / 'twilio_context.db'}")
+    db.init_db()
+    calls = []
+    start = (datetime.now(settings.tz) + timedelta(days=1)).replace(
+        hour=10,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    slot = Slot(
+        value=start.isoformat(),
+        label="Mo, 18.05. 10:00 Uhr",
+        start=start,
+        end=start + timedelta(minutes=30),
+    )
+
+    async def fake_generate_text(**kwargs):
+        calls.append(kwargs)
+        return "Aus den Daten: Ich schaue auf den Kalender."
+
+    monkeypatch.setattr("app.services.twilio_bridge.gemini.generate_text", fake_generate_text)
+    monkeypatch.setattr(calendar, "get_available_slots", lambda max_slots=4: [slot])
+
+    with TestClient(app) as client:
+        lead = client.post("/api/intake", json=_pursue_payload()).json()
+        lead_id = lead["lead_id"]
+        db.update_agentic_artifacts(
+            lead_id,
+            status="call_scheduled",
+            solar={"solar_potential": {"estimated_kwp": 11.6, "yearly_energy_kwh": 8541}},
+            profitability={"score": 96, "payback_years": 9.6},
+            offer={"system_size_kwp": 11.6, "module_count": 29},
+        )
+        with client.websocket_connect(f"/ws/twilio/conversation/{lead_id}") as websocket:
+            websocket.send_json({"type": "setup", "sessionId": "VX123", "callSid": "CA123"})
+            websocket.send_json(
+                {
+                    "type": "prompt",
+                    "voicePrompt": "Wann kann der Handwerker kommen?",
+                    "lang": "de-DE",
+                    "last": True,
+                }
+            )
+            websocket.receive_json()
+
+    reply_calls = [call for call in calls if call["payload"].get("customer_prompt")]
+    payload = reply_calls[-1]["payload"]
+    assert payload["lead_specific_context"]["name"] == "Anna Becker"
+    assert payload["lead_specific_context"]["address"].startswith("Am Schnittelberg")
+    assert payload["appointment_calendar"][0]["label"] == "Mo, 18.05. 10:00 Uhr"
+    assert payload["business_case"]["available_slots"][0]["label"] == "Mo, 18.05. 10:00 Uhr"
+    assert "Never answer from generic scripts first" in reply_calls[-1]["system_prompt"]
+
+
 def test_twilio_relay_ignores_backchannel_and_agent_echo() -> None:
     state = {
         "turns": [
@@ -1178,9 +1233,71 @@ def test_twilio_fallback_prioritizes_installer_timing_after_ev_history() -> None
     )
 
     assert "Handwerker" in response or "Termin" in response
-    assert "Auswahl freier Termine" in response
+    assert "Buchungslink" in response or "Kalender-Slots" in response
     assert "Wie viele Kilometer" not in response
     assert "9 tausend Kilometern" not in response
+
+
+def test_twilio_fallback_uses_calendar_slots_for_installer_timing(monkeypatch) -> None:
+    start = (datetime.now(settings.tz) + timedelta(days=1)).replace(
+        hour=11,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    slots = [
+        Slot(
+            value=start.isoformat(),
+            label="Mo, 18.05. 11:00 Uhr",
+            start=start,
+            end=start + timedelta(minutes=30),
+        ),
+        Slot(
+            value=(start + timedelta(hours=2)).isoformat(),
+            label="Mo, 18.05. 13:00 Uhr",
+            start=start + timedelta(hours=2),
+            end=start + timedelta(hours=2, minutes=30),
+        ),
+    ]
+    monkeypatch.setattr(calendar, "get_available_slots", lambda max_slots=4: slots[:max_slots])
+    lead = SolarLeadIntake.model_validate(_pursue_payload() | {"lead_id": "L-SLOTS"})
+    business_case = twilio_bridge._business_case_context({}, lead)
+
+    response = twilio_bridge._local_fallback_response(
+        {"turns": [{"role": "customer", "text": "Wann kann der Handwerker kommen?"}]},
+        "Wann kann der Handwerker kommen?",
+        "de-DE",
+        business_case,
+    )
+
+    assert "Mo, 18.05. 11:00 Uhr" in response
+    assert "Mo, 18.05. 13:00 Uhr" in response
+    assert "Wie viele Kilometer" not in response
+
+
+def test_twilio_fallback_calculates_ev_consumption_from_km_question() -> None:
+    response = twilio_bridge._local_fallback_response(
+        {
+            "turns": [
+                {
+                    "role": "customer",
+                    "text": "Ich fahre grob 9000 km, wie viel Kilowattstunden waere das?",
+                }
+            ]
+        },
+        "Ich fahre grob 9000 km, wie viel Kilowattstunden waere das?",
+        "de-DE",
+        {
+            "ev_assumptions": {
+                "ev_kwh_per_100km": 18,
+                "public_charging_eur_per_kwh": 0.55,
+                "solar_charging_value_eur_per_kwh": 0.15,
+            }
+        },
+    )
+
+    assert "9 tausend Kilometern" in response
+    assert "1 tausend 600 Kilowattstunden" in response
 
 
 def test_gemini_text_returns_fallback_on_rate_limit(monkeypatch) -> None:

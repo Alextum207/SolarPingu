@@ -65,6 +65,10 @@ def _local_fallback_response(
         "speicher",
         "e-auto",
         "auto",
+        "km",
+        "kilometer",
+        "verbrauch",
+        "kilowattstunden",
         "wallbox",
         "laden",
         "kosten",
@@ -415,6 +419,12 @@ async def _gemini_call_response(
         "Do not mention PDFs, internal demos, Vapi, Twilio, or technical systems. "
         "The form already collected ownership, roof, need, timeline, budget, decision maker, "
         "and main concern. Do not run a technical checklist and do not re-qualify the lead. "
+        "Never answer from generic scripts first. Use the concrete lead, solar, profitability, "
+        "offer, business_case, lead_specific_context, and appointment_calendar in the payload. "
+        "If the customer asks about their project, answer with this lead's numbers. If the "
+        "customer asks when an installer can come, answer only from appointment_calendar; if "
+        "slots are available, name the nearest 1-2 slots. If no slots are available, say that "
+        "no live slots are readable right now and the booking link will show the next options. "
         "Your first goal is to resolve the customer's concern in plain human language. "
         "At the very beginning, when the customer only says they are ready or you can start, "
         "do not recite system size, yearly kWh, savings, payback, prices, or any other numbers. "
@@ -471,8 +481,10 @@ async def _gemini_call_response(
         "profitability": stored.get("profitability"),
         "offer": stored.get("offer"),
         "business_case": business_case,
+        "lead_specific_context": _lead_specific_context(lead, business_case),
         "objection_playbook": _objection_playbook(business_case),
         "agent2_plan": _planning_context(stored),
+        "appointment_calendar": business_case.get("available_slots") or [],
         "conversation_so_far": state["turns"][-8:],
         "known_qualification": _qualification_flags(customer_text),
         "current_concerns": current_concerns,
@@ -735,6 +747,7 @@ def _business_case_context(stored: dict[str, Any], lead: SolarLeadIntake) -> dic
         "estimated_yearly_value_eur": estimated_yearly_value,
         "includes_battery": offer.get("includes_battery") or lead.battery_interest,
         "ev_or_wallbox_interest": lead.wallbox_interest,
+        "available_slots": _available_slot_context(max_slots=4),
         "ev_assumptions": {
             "ev_kwh_per_100km": 18,
             "public_charging_eur_per_kwh": 0.55,
@@ -757,6 +770,43 @@ def _business_case_context(stored: dict[str, Any], lead: SolarLeadIntake) -> dic
             lead_score=lead_score,
             ghosting_risk=ghosting_risk,
         ),
+    }
+
+
+def _available_slot_context(*, max_slots: int = 4) -> list[dict[str, str]]:
+    try:
+        slots = calendar.get_available_slots(max_slots=max_slots)
+    except Exception:
+        return []
+    return [
+        {
+            "label": slot.label,
+            "value": slot.value,
+        }
+        for slot in slots
+    ]
+
+
+def _lead_specific_context(lead: SolarLeadIntake, business_case: dict[str, Any]) -> dict[str, Any]:
+    spoken = business_case.get("spoken") or {}
+    return {
+        "name": lead.name,
+        "address": lead.address,
+        "need": lead.need,
+        "main_concern": lead.main_concern,
+        "battery_interest": lead.battery_interest,
+        "wallbox_interest": lead.wallbox_interest,
+        "timeline": lead.timeline,
+        "budget_range": lead.budget_range,
+        "spoken_project_numbers": {
+            "system_size_kwp": spoken.get("kwp"),
+            "yearly_energy_kwh": spoken.get("yearly_kwh"),
+            "price_min_eur": spoken.get("price_min"),
+            "price_max_eur": spoken.get("price_max"),
+            "yearly_value_eur": spoken.get("yearly_saving"),
+            "payback_years": spoken.get("payback"),
+            "modules": spoken.get("modules"),
+        },
     }
 
 
@@ -791,6 +841,7 @@ def _spoken_business_case(business_case: dict[str, Any]) -> str:
 
 def _objection_playbook(business_case: dict[str, Any]) -> dict[str, str]:
     values = _playbook_values(business_case)
+    appointment_sentence = _appointment_timing_sentence(business_case)
     return {
         "too_expensive": (
             f"Ja, die Investition liegt voraussichtlich zwischen {values['price_min']} Euro "
@@ -849,9 +900,7 @@ def _objection_playbook(business_case: dict[str, Any]) -> dict[str, str]:
             "ein Teil Netzstrom uebrig."
         ),
         "appointment_timing": (
-            "Zum Handwerker-Termin: Sie bekommen nach dem Gespraech eine Auswahl freier Termine. "
-            "Dort koennen Sie online oder Vor-Ort waehlen; der Handwerker bestaetigt den Termin "
-            "danach final. Je nach freiem Slot kann das oft zeitnah passieren."
+            appointment_sentence
         ),
     }
 
@@ -902,7 +951,7 @@ def _detect_objection_keys(current: str) -> list[str]:
         ("sunlight_region", ["sonne", "sonnig", "scheint", "frankfurt", "wetter", "bewolkt", "regen", "winter"]),
         ("grid_independence", ["unabhangig", "unabhaengig", "autark", "stromnetz", "netzbezug", "netzstrom", "energieversorger"]),
         ("appointment_timing", ["handwerker", "monteur", "installateur", "termin", "vor ort", "vor-ort", "kommen", "wartezeit", "wie lange dauert", "wann konnen", "wann koennen"]),
-        ("ev", ["e-auto", "e auto", "elektroauto", "elektro", "auto", "wallbox", "laden", "ladestation", "ladesaule"]),
+        ("ev", ["e-auto", "e auto", "elektroauto", "elektro", "auto", "wallbox", "laden", "ladestation", "ladesaule", "km", "kilometer", "fahrleistung", "verbrauch"]),
     ]
     detected = []
     for key, words in checks:
@@ -1031,6 +1080,30 @@ def _playbook_values(business_case: dict[str, Any]) -> dict[str, str]:
         "modules": spoken.get("modules") or "noch nicht final",
         "ghosting_risk": spoken.get("ghosting_risk") or "noch nicht final",
     }
+
+
+def _appointment_timing_sentence(business_case: dict[str, Any]) -> str:
+    slots = business_case.get("available_slots") or []
+    labels = [
+        str(slot.get("label") or "").strip()
+        for slot in slots
+        if isinstance(slot, dict) and str(slot.get("label") or "").strip()
+    ]
+    if labels:
+        if len(labels) == 1:
+            slot_text = labels[0]
+        else:
+            slot_text = f"{labels[0]} oder {labels[1]}"
+        return (
+            "Ich schaue auf die freien Termine: aktuell waeren zum Beispiel "
+            f"{slot_text} frei. Sie koennen nach dem Gespraech online oder Vor-Ort "
+            "auswaehlen; der Handwerker bestaetigt den Wunschslot danach final."
+        )
+    return (
+        "Ich kann gerade keine freien Kalender-Slots live auslesen. Nach dem Gespraech "
+        "bekommen Sie trotzdem den Buchungslink; dort sehen Sie die naechsten Online- "
+        "und Vor-Ort-Termine, die der Handwerker danach final bestaetigt."
+    )
 
 
 def _spoken_ev_savings(
